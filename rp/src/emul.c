@@ -8,13 +8,18 @@
 
 #include "emul.h"
 
+#include <ctype.h>
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 // inclusw in the C file to avoid multiple definitions
 #include "aconfig.h"
 #include "chandler.h"
 #include "commemul.h"
 #include "constants.h"
+#include "controller.h"
 #include "debug.h"
 #include "display.h"
 #include "ff.h"
@@ -29,175 +34,420 @@
 #include "target_firmware.h"  // Include the target firmware binary
 #include "term.h"
 
-#define SLEEP_LOOP_MS 100
+#define SLEEP_LOOP_MS 50
+#define UI_REFRESH_MS 100
+
+// Shared-variable slot (0-59, all app-free) carrying the digital BT joystick
+// state to the m68k userfw hooks. The LSB lands at m68k $FA201F.
+#define SIDEPAD_BT_JOY_SLOT 3
+
+// Shared-variable slot feeding the m68k boot_gem exit banner. The banner text
+// and the VT52 clear live in the cartridge ROM (main.s); the RP only supplies
+// the connected flag here (LSB at m68k $FA2023), which boot_gem uses to pick
+// between the connected / not-connected banner. The joystick slot (3) never
+// overlaps this.
+#define SIDEPAD_EXIT_FLAG_SLOT 4
 
 enum {
   APP_MODE_SETUP = 255  // Setup
 };
 
-// Command handlers
-static void cmdMenu(const char *arg);
-static void cmdClear(const char *arg);
-static void cmdExit(const char *arg);
-static void cmdFirmware(const char *arg);
-static void cmdHelp(const char *arg);
-static void cmdBooster(const char *arg);
-static void cmdSettings(const char *arg);
-static void cmdPrint(const char *arg);
-static void cmdSave(const char *arg);
-static void cmdErase(const char *arg);
-static void cmdGet(const char *arg);
-static void cmdPutInt(const char *arg);
-static void cmdPutBool(const char *arg);
-static void cmdPutString(const char *arg);
+// Number of terminal rows used by the controller UI (last row is the terminal
+// status line, owned by term.c).
+#define UI_ROW_COUNT (TERM_SCREEN_SIZE_Y - 1)
 
-// Command table
-static const Command commands[] = {
-    {"m", cmdMenu},
-    {"h", cmdHelp},
-    {"e", cmdExit},
-    {"f", cmdFirmware},
-    {"x", cmdBooster},
-    {"?", cmdHelp},
-    {"s", cmdSettings},
-    {"settings", cmdSettings},
-    {"print", cmdPrint},
-    {"save", cmdSave},
-    {"erase", cmdErase},
-    {"get", cmdGet},
-    {"put_int", cmdPutInt},
-    {"put_bool", cmdPutBool},
-    {"put_str", cmdPutString},
-};
+// Throttles redraws of the live controller UI to UI_REFRESH_MS.
+static absolute_time_t uiRefreshTime;
 
-// Number of commands in the table
-static const size_t numCommands = sizeof(commands) / sizeof(commands[0]);
+static void appendFmt(char *buffer, size_t bufferSize, size_t *offset,
+                      const char *fmt, ...) {
+  if ((buffer == NULL) || (offset == NULL) || (*offset >= bufferSize) ||
+      (fmt == NULL)) {
+    return;
+  }
+
+  va_list args;
+  va_start(args, fmt);
+  size_t remaining = bufferSize - *offset;
+  int written = vsnprintf(buffer + *offset, remaining, fmt, args);
+  va_end(args);
+
+  if (written < 0) {
+    return;
+  }
+
+  size_t writeSize = (size_t)written;
+  if (writeSize >= remaining) {
+    *offset = bufferSize - 1;
+    return;
+  }
+
+  *offset += writeSize;
+}
+
+static void appendMoveAndClearLine(char *buffer, size_t bufferSize,
+                                   size_t *offset, uint8_t row) {
+  appendFmt(buffer, bufferSize, offset,
+            "\x1B"
+            "Y%c%c\x1B"
+            "K",
+            (char)(TERM_POS_Y + row), (char)(TERM_POS_X));
+}
+
+static void appendLineAt(char *buffer, size_t bufferSize, size_t *offset,
+                         uint8_t row, const char *text) {
+  char line[TERM_SCREEN_SIZE_X + 1] = {0};
+  if (text != NULL) {
+    snprintf(line, sizeof(line), "%-39.39s", text);
+  } else {
+    snprintf(line, sizeof(line), "%-39s", "");
+  }
+  appendMoveAndClearLine(buffer, bufferSize, offset, row);
+  appendFmt(buffer, bufferSize, offset, "%s", line);
+}
+
+// Layout of the digital joystick indicator drawn with text characters.
+// A direction box on the left holds a solid block that moves to one of nine
+// positions (centre + 8 compass directions); a fire box on the right fills
+// solid when any button is pressed.
+#define DIR_BOX_INNER_W 9  // inner playfield width in chars
+#define DIR_BOX_INNER_H 9  // inner playfield height in rows
+#define DIR_BLOCK_SIZE 3   // direction blob is DIR_BLOCK_SIZE x DIR_BLOCK_SIZE
+#define DIR_BOX_ROW 6      // first screen row of the direction box
+#define DIR_BOX_COL 0      // left screen column of the direction box
+#define FIRE_BOX_INNER_W 3
+#define FIRE_BOX_INNER_H 3
+// Direction box spans cols 0..(DIR_BOX_COL + DIR_BOX_INNER_W + 1) = 0..10; place
+// the fire box at col 12 to leave exactly one empty column (11) between them.
+#define FIRE_BOX_COL 12  // left screen column of the fire box
+
+// Box-drawing and block glyphs from u8g2_font_amstrad_cpc_extended_8f. Codes
+// confirmed by decoding the font bitmaps (see GLYPH debug screen):
+//   128 vertical, 129 horizontal, 131/132/133/130 = TL/TR/BR/BL corners,
+//   157 = solid filled square.
+#define GLYPH_V ((char)128)          // vertical line
+#define GLYPH_H ((char)129)          // horizontal line
+#define GLYPH_CORNER_TL ((char)131)  // top-left
+#define GLYPH_CORNER_TR ((char)132)  // top-right
+#define GLYPH_CORNER_BR ((char)133)  // bottom-right
+#define GLYPH_CORNER_BL ((char)130)  // bottom-left
+#define BLOCK_CHAR ((char)157)       // solid filled square
+
+// Draws a bordered box into lines at the given top-left cell using the
+// line-drawing glyphs. The inner area is filled by fillChar; pass '\0' to leave
+// it blank. The block, when blockRow/blockCol are >= 0, overwrites a
+// blockSize x blockSize square of inner cells with the solid glyph.
+static void drawBox(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t topRow,
+                    uint8_t leftCol, uint8_t innerW, uint8_t innerH,
+                    char fillChar, int blockRow, int blockCol,
+                    uint8_t blockSize) {
+  uint8_t bottomRow = topRow + innerH + 1;
+  uint8_t rightCol = leftCol + innerW + 1;
+
+  // Corners.
+  lines[topRow][leftCol] = GLYPH_CORNER_TL;
+  lines[topRow][rightCol] = GLYPH_CORNER_TR;
+  lines[bottomRow][leftCol] = GLYPH_CORNER_BL;
+  lines[bottomRow][rightCol] = GLYPH_CORNER_BR;
+
+  // Top and bottom edges.
+  for (uint8_t x = 0; x < innerW; x++) {
+    lines[topRow][leftCol + 1 + x] = GLYPH_H;
+    lines[bottomRow][leftCol + 1 + x] = GLYPH_H;
+  }
+
+  // Sides and interior.
+  for (uint8_t y = 0; y < innerH; y++) {
+    uint8_t row = topRow + 1 + y;
+    lines[row][leftCol] = GLYPH_V;
+    lines[row][rightCol] = GLYPH_V;
+    for (uint8_t x = 0; x < innerW; x++) {
+      lines[row][leftCol + 1 + x] = (fillChar != '\0') ? fillChar : ' ';
+    }
+  }
+
+  if ((blockRow >= 0) && (blockCol >= 0)) {
+    for (uint8_t by = 0; by < blockSize; by++) {
+      for (uint8_t bx = 0; bx < blockSize; bx++) {
+        lines[topRow + 1 + blockRow + by][leftCol + 1 + blockCol + bx] =
+            BLOCK_CHAR;
+      }
+    }
+  }
+}
+
+static void renderControllerScreen(const controller_state_t *state,
+                                   bool forceFullRefresh) {
+  static char previousLines[UI_ROW_COUNT][TERM_SCREEN_SIZE_X + 1] = {{0}};
+  char currentLines[UI_ROW_COUNT][TERM_SCREEN_SIZE_X + 1] = {{0}};
+
+  if (state == NULL) {
+    return;
+  }
+
+  // Pad every row to full width so stale characters are always overwritten.
+  for (uint8_t row = 0; row < UI_ROW_COUNT; row++) {
+    memset(currentLines[row], ' ', TERM_SCREEN_SIZE_X);
+    currentLines[row][TERM_SCREEN_SIZE_X] = '\0';
+  }
+
+  // Title row: two leading rule cells, "SIDEPAD", then a rule to the edge
+  // (--SIDEPAD------).
+  const char *title = "SIDEPAD";
+  size_t titleLen = strlen(title);
+  const size_t titleLead = 2;
+  memset(currentLines[0], GLYPH_H, titleLead);
+  memcpy(currentLines[0] + titleLead, title, titleLen);
+  memset(currentLines[0] + titleLead + titleLen, GLYPH_H,
+         TERM_SCREEN_SIZE_X - titleLead - titleLen);
+
+  // Prefer the connected controller's name; fall back to the status message.
+  const char *status;
+  if (state->connected && state->deviceName[0] != '\0') {
+    status = state->deviceName;
+  } else if (state->status[0] != '\0') {
+    status = state->status;
+  } else {
+    status = "N/A";
+  }
+  size_t statusLen = strlen(status);
+  if (statusLen > TERM_SCREEN_SIZE_X) statusLen = TERM_SCREEN_SIZE_X;
+  memcpy(currentLines[2], status, statusLen);
+
+  // Blob top-left position: centred in the inner playfield, then pushed fully
+  // to an edge per active direction so diagonals work just like a real stick.
+  // Position is the blob's top-left cell, so it ranges 0..(inner - blockSize).
+  int blockRow = (DIR_BOX_INNER_H - DIR_BLOCK_SIZE) / 2;
+  int blockCol = (DIR_BOX_INNER_W - DIR_BLOCK_SIZE) / 2;
+  if (state->anyUp) blockRow = 0;
+  if (state->anyDown) blockRow = DIR_BOX_INNER_H - DIR_BLOCK_SIZE;
+  if (state->anyLeft) blockCol = 0;
+  if (state->anyRight) blockCol = DIR_BOX_INNER_W - DIR_BLOCK_SIZE;
+
+  drawBox(currentLines, DIR_BOX_ROW, DIR_BOX_COL, DIR_BOX_INNER_W,
+          DIR_BOX_INNER_H, '\0', blockRow, blockCol, DIR_BLOCK_SIZE);
+
+  drawBox(currentLines, DIR_BOX_ROW, FIRE_BOX_COL, FIRE_BOX_INNER_W,
+          FIRE_BOX_INNER_H, state->anyButton ? BLOCK_CHAR : '\0', -1, -1, 1);
+
+  // Bottom two rows: a horizontal rule then the controls. Each currentLines[row]
+  // is one independent screen line, so they go in separate rows (not one string
+  // with \n). Use the box-drawing horizontal glyph, which sits mid-cell, rather
+  // than '_' (cell bottom) so the rule clears the controls text below it.
+  memset(currentLines[UI_ROW_COUNT - 2], GLYPH_H, TERM_SCREEN_SIZE_X);
+  // Overlay the build version near the right end of the rule (----vX.Y.Z--).
+  // appendLineAt renders TERM_SCREEN_SIZE_X - 1 cells, so anchor to that and
+  // leave two trailing rule cells after the version.
+  const char *version = RELEASE_VERSION;
+  size_t versionLen = strlen(version);
+  if (versionLen + 2 < (size_t)(TERM_SCREEN_SIZE_X - 1)) {
+    size_t versionCol = (size_t)(TERM_SCREEN_SIZE_X - 1) - 2 - versionLen;
+    memcpy(currentLines[UI_ROW_COUNT - 2] + versionCol, version, versionLen);
+  }
+  // The controls footer (bottom row) is emitted separately below with the key
+  // names in reverse video, so it is not part of this plain-char grid (the
+  // ESC p/q codes are not fixed-width cells).
+
+  char updates[2048] = {0};
+  size_t offset = 0;
+
+  if (forceFullRefresh) {
+    appendFmt(updates, sizeof(updates), &offset,
+              "\x1B"
+              "E");
+  }
+
+  for (uint8_t row = 0; row < UI_ROW_COUNT; row++) {
+    if (forceFullRefresh ||
+        (strcmp(currentLines[row], previousLines[row]) != 0)) {
+      appendLineAt(updates, sizeof(updates), &offset, row, currentLines[row]);
+      snprintf(previousLines[row], sizeof(previousLines[row]), "%s",
+               currentLines[row]);
+    }
+  }
+
+  // Controls footer with reverse-video key names (VT52 ESC p = on, ESC q = off).
+  // Emitted outside the plain-char grid because the escape codes are not
+  // fixed-width cells. Only on a full refresh: the row is static, so it persists
+  // across partial refreshes (the grid never repaints this row).
+  if (forceFullRefresh) {
+    appendMoveAndClearLine(updates, sizeof(updates), &offset, UI_ROW_COUNT - 1);
+    appendFmt(updates, sizeof(updates), &offset, "%s",
+              "\x1B" "p" "esc" "\x1B" "q" " Exit  "
+              "\x1B" "p" "p" "\x1B" "q" " Pair  "
+              "\x1B" "p" "x" "\x1B" "q" " Booster");
+  }
+
+  // Park the cursor block in the empty bottom-right cell so it doesn't sit on
+  // top of the footer text. (The terminal always draws a block cursor; this
+  // keeps it out of the way without changing the shared terminal code.)
+  appendFmt(updates, sizeof(updates), &offset,
+            "\x1B"
+            "Y%c%c",
+            (char)(TERM_POS_Y + (UI_ROW_COUNT - 1)),
+            (char)(TERM_POS_X + (TERM_SCREEN_SIZE_X - 1)));
+  term_printString(updates);
+}
+
+// Render the controller UI from the live controller.c snapshot.
+static void refreshControllerUI(bool forceFullRefresh) {
+  controller_state_t state = {0};
+  controller_getState(&state);
+  renderControllerScreen(&state, forceFullRefresh);
+}
 
 // Keep active loop or exit
 static bool keepActive = true;
-static bool menuScreenActive = false;
-static absolute_time_t menuRefreshTime;
-
-// Polling tick used as the network poll callback so command handling stays
-// alive during multi-second WiFi operations.
-static void __not_in_flash_func(emul_pollTick)(void) {
-  chandler_loop();
-  term_loop();
-}
-
-#define MENU_REFRESH_TIME_MS 1000
 
 // Should we reset the device, or jump to the booster app?
 // By default, we reset the device.
 static bool resetDeviceAtBoot = true;
 
+// Set when the user chooses [ESC] Desktop: leave the terminal loop, install the
+// m68k joystick hook, and continue booting to the GEM desktop instead of
+// resetting / returning to Booster.
+static bool exitToDesktop = false;
+
+// Number of CMD_START frames to hold while the m68k installs the joystick hook
+// on the way out to the desktop (the installer is idempotent).
+#define SIDEPAD_HOOK_START_TICKS 10
+// Number of CMD_BOOT_GEM frames to hold so the m68k reliably latches the boot
+// handoff. A single sentinel write can race the m68k's vsync-paced
+// check_commands poll and be dropped, leaving it stuck redrawing the terminal;
+// repeating it guarantees boot_gem runs. Once boot_gem rts's, the m68k leaves
+// the print loop and stops reading the sentinel, so the extra writes are inert.
+#define SIDEPAD_BOOT_GEM_TICKS 10
+// Joystick state refresh interval once a game is running (~50 Hz).
+#define SIDEPAD_JOY_POLL_MS 20
+
+// Pack the controller's collapsed 8-way + fire signals into the IKBD joystick
+// byte the m68k VBL hook consumes and publish it to the shared-variable slot
+// the hook polls. Direction bits use the standard IKBD encoding, confirmed on
+// hardware via JOYMOUT: bit0=Up, bit1=Down, bit2=Left, bit3=Right. Fire is
+// carried in bit6 here and moved to the IKBD fire bit (bit7) by userfw.s.
+static void writeBtJoyState(void) {
+  controller_state_t btState = {0};
+  controller_getState(&btState);
+  uint8_t bt = 0;
+  if (btState.anyUp) bt |= 0x01;
+  if (btState.anyDown) bt |= 0x02;
+  if (btState.anyLeft) bt |= 0x04;
+  if (btState.anyRight) bt |= 0x08;
+  if (btState.anyButton) bt |= 0x40;
+  uint32_t romBase = (uint32_t)&__rom_in_ram_start__;
+  SET_SHARED_VAR(SIDEPAD_BT_JOY_SLOT, (uint32_t)bt, romBase,
+                 CHANDLER_SHARED_VARIABLES_OFFSET);
+}
+
+// Publish the connection state to the shared region so the m68k boot_gem handler
+// can pick which fixed banner ("Sidepad connected" / "Sidepad not connected") to
+// print from ROM on its way out to the desktop. Must run before CMD_BOOT_GEM so
+// the flag is in place when the m68k reads it.
+static void writeExitMessage(void) {
+  controller_state_t st = {0};
+  controller_getState(&st);
+  uint32_t romBase = (uint32_t)&__rom_in_ram_start__;
+
+  // Connection state -> slot 4 (m68k boot_gem picks the banner from ROM).
+  SET_SHARED_VAR(SIDEPAD_EXIT_FLAG_SLOT, st.connected ? 1u : 0u, romBase,
+                 CHANDLER_SHARED_VARIABLES_OFFSET);
+}
+
+// Leave the terminal for the GEM desktop and never return: install the m68k
+// joystick hook, publish the exit banner, hand off to boot_gem, then loop
+// forever republishing the joystick byte the resident VBL hook reads. Invoked
+// once the main loop exits with exitToDesktop set.
+static void exitToGemDesktop(void) {
+  // The joystick injection hook only matters once a game is running, so install
+  // it now, as we leave the terminal for the desktop. Installing it earlier
+  // would race the VBL handler's cartridge-bus reads against the terminal's
+  // send_sync protocol and corrupt keystroke delivery. The m68k terminal loop is
+  // still alive here to handle CMD_START.
+  for (int i = 0; i < SIDEPAD_HOOK_START_TICKS; i++) {
+    SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
+    writeBtJoyState();
+    controller_poll();
+    sleep_ms(SLEEP_LOOP_MS);
+  }
+  // Publish the exit banner before handing off so it is in place when the m68k
+  // boot_gem handler prints it. boot_gem prints it as the last thing before
+  // rts'ing out of the print loop, so it persists on screen (the print loop
+  // stops repainting the framebuffer over it).
+  writeExitMessage();
+  // Let the m68k continue booting to the GEM desktop. Hold CMD_BOOT_GEM for a few
+  // frames rather than a single write: one write can race the m68k's vsync-paced
+  // check_commands poll and be dropped, leaving it stuck redrawing the terminal
+  // (the symptom: the firmware-load message flashes, then the terminal returns).
+  // Repeating it guarantees boot_gem latches.
+  for (int i = 0; i < SIDEPAD_BOOT_GEM_TICKS; i++) {
+    SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
+    writeBtJoyState();
+    controller_poll();
+    sleep_ms(SLEEP_LOOP_MS);
+  }
+  // Now keep pumping the BLE host and republishing the joystick byte the resident
+  // VBL hook reads.
+  while (true) {
+    chandler_loop();
+    controller_poll();
+    writeBtJoyState();
+    sleep_ms(SIDEPAD_JOY_POLL_MS);
+  }
+}
+
 static void showTitle() {
   term_printString(
       "\x1B"
       "E"
-      "Microfirmware test app - " RELEASE_VERSION "\n");
+      "Sidepad - " RELEASE_VERSION "\n");
 }
 
-static void menu(void) {
-  menuScreenActive = true;
-  showTitle();
-  term_printString("\n\n");
-  term_printString("[S]ettings     | [F]irmware launch\n");
-  term_printString("[E]xit desktop | [X] Back to Booster\n\n");
-
-  // Display network information
-  term_printNetworkInfo();
-
-  term_printString("\n");
-  term_printString("Select an option: ");
-  term_markMenuPromptCursor();
-  menuRefreshTime = make_timeout_time_ms(MENU_REFRESH_TIME_MS);
+// Handle a single key shortcut from the controller screen. Sidepad uses the
+// terminal transport purely as a key-input path, so shortcuts act on the first
+// keypress (no Enter, unlike the template's line-based command REPL).
+static void handleUiKeystroke(char keystroke) {
+  DPRINTF("UI keystroke: '%c' (0x%02X)\n", keystroke, (uint8_t)keystroke);
+  switch (tolower((unsigned char)keystroke)) {
+    case 'p':
+      DPRINTF("Pair requested\n");
+      controller_requestPairing();
+      break;
+    case 'x':
+      // Return to Booster via the clean chip-reset path (loop tail).
+      resetDeviceAtBoot = false;
+      keepActive = false;
+      exitToDesktop = false;
+      break;
+    default:
+      break;
+  }
 }
 
-// Command handlers
-void cmdMenu(const char *arg) { menu(); }
-
-void cmdHelp(const char *arg) {
-  menuScreenActive = false;
-  // term_printString("\x1B" "E" "Available commands:\n");
-  term_printString("Available commands:\n");
-  term_printString(" General:\n");
-  term_printString("  clear   - Clear the terminal screen\n");
-  term_printString("  exit    - Exit the terminal\n");
-  term_printString("  f       - Launch user firmware on the Atari ST\n");
-  term_printString("  help    - Show available commands\n");
-}
-
-void cmdClear(const char *arg) {
-  menuScreenActive = false;
-  term_clearScreen();
-}
-
-void cmdExit(const char *arg) {
-  menuScreenActive = false;
-  term_printString("Exiting terminal...\n");
-  // Send continue to desktop command
-  SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
-}
-
-void cmdFirmware(const char *arg) {
-  menuScreenActive = false;
-  term_printString("Launching user firmware on the Atari ST...\n");
-  // Write CMD_START into the cartridge sentinel slot. The m68k's
-  // check_commands macro polls the slot every vsync; on CMD_START it
-  // beq's into rom_function, which jmp's to USERFW (target/atarist/src/
-  // userfw.s). The default userfw demo prints
-  // "Example firmware load..." via Cconws and returns.
-  SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
-}
-
-void cmdBooster(const char *arg) {
-  menuScreenActive = false;
-  term_printString("Launching Booster app...\n");
-  term_printString("The computer will boot shortly...\n\n");
-  term_printString("If it doesn't boot, power it on and off.\n");
-  resetDeviceAtBoot = false;  // Jump to the booster app
-  keepActive = false;         // Exit the active loop
-}
-
-void cmdSettings(const char *arg) {
-  menuScreenActive = false;
-  term_cmdSettings(arg);
-}
-
-void cmdPrint(const char *arg) {
-  menuScreenActive = false;
-  term_cmdPrint(arg);
-}
-
-void cmdSave(const char *arg) {
-  menuScreenActive = false;
-  term_cmdSave(arg);
-}
-
-void cmdErase(const char *arg) {
-  menuScreenActive = false;
-  term_cmdErase(arg);
-}
-
-void cmdGet(const char *arg) {
-  menuScreenActive = false;
-  term_cmdGet(arg);
-}
-
-void cmdPutInt(const char *arg) {
-  menuScreenActive = false;
-  term_cmdPutInt(arg);
-}
-
-void cmdPutBool(const char *arg) {
-  menuScreenActive = false;
-  term_cmdPutBool(arg);
-}
-
-void cmdPutString(const char *arg) {
-  menuScreenActive = false;
-  term_cmdPutString(arg);
+// chandler callback: route the m68k's terminal keystrokes straight to the
+// Sidepad single-key handler instead of the line-based command REPL.
+static void sidepadInputCb(TransmissionProtocol *protocol,
+                           uint16_t *payloadPtr) {
+  if (protocol == NULL) {
+    return;
+  }
+  switch (protocol->command_id) {
+    case APP_TERMINAL_START:
+      // ESC ([ESC] Desktop): leave the terminal loop and continue booting to
+      // the GEM desktop, installing the joystick hook on the way out.
+      keepActive = false;
+      exitToDesktop = true;
+      break;
+    case APP_TERMINAL_KEYSTROKE: {
+      if (payloadPtr == NULL) {
+        return;
+      }
+      uint32_t payload32 = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
+      handleUiKeystroke((char)(payload32 & TERM_KEYBOARD_KEY_MASK));
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 // This section contains the functions that are called from the main loop
@@ -216,58 +466,18 @@ static void preinit() {
   // Show the title
   showTitle();
   term_printString("\n\n");
-  term_printString("Configuring network... please wait...\n");
-
-  display_refresh();
-}
-
-void failure(const char *message) {
-  // Initialize the terminal
-  term_init();
-
-  // Clear the screen
-  term_clearScreen();
-
-  // Show the title
-  showTitle();
-  term_printString("\n\n");
-  term_printString(message);
+  term_printString("Loading, please wait...\n");
 
   display_refresh();
 }
 
 static void init(void) {
-  // Set the command table
-  term_setCommands(commands, numCommands);
-
   // Clear the screen
   term_clearScreen();
 
-  // Display the menu
-  menu();
-
-  // Example 1: Move the cursor up one line.
-  // VT52 sequence: ESC A (moves cursor up)
-  // The escape sequence "\x1BA" will move the cursor up one line.
-  // term_printString("\x1B" "A");
-  // After moving up, print text that overwrites part of the previous line.
-  // term_printString("Line 2 (modified by ESC A)\n");
-
-  // Example 2: Move the cursor right one character.
-  // VT52 sequence: ESC C (moves cursor right)
-  // term_printString("\x1B" "C");
-  // term_printString(" <-- Moved right with ESC C\n");
-
-  // Example 3: Direct cursor addressing.
-  // VT52 direct addressing uses ESC Y <row> <col>, where:
-  //   row_char = row + 0x20, col_char = col + 0x20.
-  // For instance, to move the cursor to row 0, column 10:
-  //   row: 0 -> 0x20 (' ')
-  //   col: 10 -> 0x20 + 10 = 0x2A ('*')
-  // term_printString("\x1B" "Y" "\x20" "\x2A");
-  // term_printString("Text at row 0, column 10 via ESC Y\n");
-
-  // term_printString("\x1B" "Y" "\x2A" "\x20");
+  // Draw the Sidepad controller screen from the live controller state.
+  refreshControllerUI(true);
+  uiRefreshTime = make_timeout_time_ms(UI_REFRESH_MS);
 
   display_refresh();
 }
@@ -345,7 +555,7 @@ void emul_start() {
     panic("commemul_init failed: PIO/DMA claim or program load returned <0");
   }
   chandler_init();
-  chandler_addCB(term_command_cb);
+  chandler_addCB(sidepadInputCb);
 
   // After this point, the remote computer can execute the code
 
@@ -397,58 +607,19 @@ void emul_start() {
   // initialized
   preinit();
 
-  // 6. Init the network, if needed
-  // It's always a good idea to wait for the network to be ready
-  // Get the WiFi mode from the settings
-  // If you are developing code that does not use the network, you can
-  // comment this section
-  // It's important to note that the network parameters are taken from the
-  // global configuration of the Booster app. The network parameters are
-  // ready only for the microfirmware apps.
-  SettingsConfigEntry *wifiMode =
-      settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
-  wifi_mode_t wifiModeValue = WIFI_MODE_STA;
-  if (wifiMode == NULL) {
-    DPRINTF("No WiFi mode found in the settings. No initializing.\n");
-  } else {
-    wifiModeValue = (wifi_mode_t)atoi(wifiMode->value);
-    if (wifiModeValue != WIFI_MODE_AP) {
-      DPRINTF("WiFi mode is STA\n");
-      wifiModeValue = WIFI_MODE_STA;
-      int err = network_wifiInit(wifiModeValue);
-      if (err != 0) {
-        DPRINTF("Error initializing the network: %i. No initializing.\n", err);
-      } else {
-        // Drain commands and run the terminal loop during WiFi polling so
-        // commands sent during the (potentially multi-second) connect don't
-        // pile up in the ROM3 ring.
-        network_setPollingCallback(emul_pollTick);
-        // Connect to the WiFi network
-        int maxAttempts = 3;  // or any other number defined elsewhere
-        int attempt = 0;
-        err = NETWORK_WIFI_STA_CONN_ERR_TIMEOUT;
-
-        while ((attempt < maxAttempts) &&
-               (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-          err = network_wifiStaConnect();
-          attempt++;
-
-          if ((err > 0) && (err < NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-            DPRINTF("Error connecting to the WiFi network: %i\n", err);
-          }
-        }
-
-        if (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT) {
-          DPRINTF("Timeout connecting to the WiFi network after %d attempts\n",
-                  maxAttempts);
-          // Optionally, return an error code here.
-        }
-        network_setPollingCallback(NULL);
-      }
-    } else {
-      DPRINTF("WiFi mode is AP. No initializing.\n");
-    }
+  // 6. Bring up the BLE controller host.
+  // Sidepad does not use WiFi: the CYW43 chip is shared between WiFi and
+  // Bluetooth, and we bring it up in BT-only mode via controller_init()
+  // (which calls network_initChipOnly() then starts Bluepad32). The terminal
+  // already shows the controller screen; surface init progress/errors there.
+  controller_setStatus("Starting BLE controller host...");
+  refreshControllerUI(true);
+  int controllerErr = controller_init();
+  if (controllerErr != 0) {
+    DPRINTF("controller_init failed: %i\n", controllerErr);
+    controller_setStatus("BLE init failed - check Pico W / CYW43");
   }
+  refreshControllerUI(true);
 
   // 7. Configure the SELECT button so menu status can show it immediately.
   select_configure();
@@ -470,28 +641,24 @@ void emul_start() {
   // For testing purposes, this app only shows commands to manage the settings
   DPRINTF("Start the app loop here\n");
   while (getKeepActive()) {
-#if PICO_CYW43_ARCH_POLL
-    network_safePoll();
-    cyw43_arch_wait_for_work_until(make_timeout_time_ms(SLEEP_LOOP_MS));
-#else
-    sleep_ms(SLEEP_LOOP_MS);
-#endif
-    // Drain the ROM3 command ring → dispatch to registered callbacks.
+    // Drain the ROM3 command ring → dispatch to registered callbacks
+    // (sidepadInputCb handles single-key shortcuts).
     chandler_loop();
 
-    // Run the terminal foreground (consume the published command, render
-    // output, etc.).
-    term_loop();
+    // Drive the BLE controller host (CYW43 + BTstack poll, status update).
+    controller_poll();
 
-    if (menuScreenActive) {
-      char *input = term_getInputBuffer();
-      bool hasPendingInput = (input != NULL) && (input[0] != '\0');
-      if (!hasPendingInput &&
-          (absolute_time_diff_us(get_absolute_time(), menuRefreshTime) <= 0)) {
-        term_refreshMenuLiveInfo();
-        menuRefreshTime = make_timeout_time_ms(MENU_REFRESH_TIME_MS);
-      }
+    // Redraw the live controller UI on a fixed cadence.
+    if (absolute_time_diff_us(get_absolute_time(), uiRefreshTime) <= 0) {
+      refreshControllerUI(false);
+      uiRefreshTime = make_timeout_time_ms(UI_REFRESH_MS);
     }
+
+    sleep_ms(SLEEP_LOOP_MS);
+  }
+
+  if (exitToDesktop) {
+    exitToGemDesktop();  // never returns
   }
 
   // 10. Send RESET computer command
@@ -512,8 +679,12 @@ void emul_start() {
                          APP_MODE_SETUP);
     settings_save(aconfig_getContext(), true);
 
-    // Jump to the booster app
-    DPRINTF("Jumping to the booster app...\n");
-    reset_jump_to_booster();
+    // Return to Booster via a full chip reset rather than an in-place jump: the
+    // reset clears the pio0/DMA state this app brought up (romemul + commemul),
+    // so Booster starts on pristine hardware. An in-place jump leaves those
+    // running and corrupts Booster (garbled screen). main() routes back to
+    // Booster on the clean restart.
+    DPRINTF("Rebooting to the booster app...\n");
+    reset_reboot_to_booster();
   }
 }

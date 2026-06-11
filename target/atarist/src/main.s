@@ -180,8 +180,10 @@ check_commands		macro
 					cmp.l #CMD_BOOT_GEM, d6		; Check if the command is to boot GEM
 					beq boot_gem				; If it is, boot GEM
 					cmp.l #CMD_START, d6		; Check if the command hands over to USERFW
-					beq rom_function			; If it is, jump to the user firmware dispatcher
-
+					bne.s .\@no_start			; If not, fall through to the NOP/keys path
+					bsr rom_function			; Call USERFW (returns after installing hooks)
+					bra .\@bypass
+.\@no_start:
 					; If we are here, the command is a NOP
 					; If the command is a NOP, check the shift keys to bypass the command
 					; check_shift_keys
@@ -324,9 +326,36 @@ start_rom_code:
 	jmp (a0)
 	nop
 
+GEMDOS_Cconws		equ 9						; trap #1 -> print null-terminated string
+EXIT_FLAG_ADDR		equ (SHARED_VARIABLES + (4 * 4) + 3)	; connected flag, LSB of slot 4 ($FA2023)
+
 boot_gem:
-	; If we get here, continue loading GEM
-    rts
+	; Print the exit banner via the VT52 console, then return to TOS to continue
+	; booting to the GEM desktop. boot_gem is reached via a beq from
+	; check_commands inside the print loop, at the same stack level as the
+	; CA_INIT return address, so this rts unwinds the print loop -- printing here
+	; (not from USERFW, which returns into the loop) means the framebuffer copy
+	; stops right after, so the banner persists on screen.
+	;
+	; Both banners (VT52 clear + fixed text) live here in ROM (read from the
+	; cartridge, which is readable), so nothing is subject to the unreliable
+	; shared-region string transfer; the RP supplies only the connected flag
+	; (slot 4) to pick between them.
+	lea	bg_msg_conn(pc), a0			; ESC E + "Sidepad connected" + blank line
+	tst.b	EXIT_FLAG_ADDR
+	bne.s	.bg_print
+	lea	bg_msg_noconn(pc), a0			; ESC E + "Sidepad not connected" + blank line
+.bg_print:
+	move.l	a0, -(sp)
+	move.w	#GEMDOS_Cconws, -(sp)
+	trap	#1
+	addq.l	#6, sp
+	rts
+bg_msg_conn:
+	dc.b	27,"E","Sidepad connected",13,10,13,10,0
+bg_msg_noconn:
+	dc.b	27,"E","Sidepad not connected",13,10,13,10,0
+	even
 
 ; Dispatcher for the user firmware module. Reached on CMD_START via the
 ; sentinel poll in check_commands. The cartridge image places userfw.s
@@ -336,7 +365,23 @@ boot_gem:
 ; the same way md-drives-emulator's rom_function dispatches into
 ; GEMDRIVE/FLOPPYEMUL/ACSIEMUL/RTCEMUL.
 rom_function:
-    jmp USERFW
+    ; Run the userfw installer exactly once. The CMD_START sentinel stays set
+    ; for several frames (the RP holds it, then switches back to CMD_TERMINAL),
+    ; so guard against re-installing. The flag lives in this relocated-to-RAM
+    ; code, reached PC-relative so the write lands in RAM (the cartridge ROM
+    ; region is read-only to the ST); an absolute write would bus-error.
+    lea     userfw_installed(pc), a0
+    tst.l   (a0)
+    bne.s   .rf_done
+    move.l  #1, (a0)
+    movem.l d0-d2/a0-a2, -(sp)
+    jsr     USERFW              ; installer executes from ROM (fetch/reads OK)
+    movem.l (sp)+, d0-d2/a0-a2
+.rf_done:
+    rts
+
+userfw_installed:
+    dc.l    0
 
 ; Shared functions included at the end of the file
 ; Don't forget to include the macros for the shared functions at the top of file

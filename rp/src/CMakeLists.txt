@@ -92,6 +92,34 @@ add_subdirectory(u8g2)
 # Add HTTP client library
 add_subdirectory(httpc)
 
+# Bluepad32 (Bluetooth controller support). Uses BTstack from the Pico SDK.
+# The config headers (btstack_config.h, sdkconfig.h) and BTstack helper include
+# dirs must be visible to libbluepad32, so set them as directory-level includes
+# BEFORE add_subdirectory().
+set(BLUEPAD32_ROOT ${REPO_ROOT}/bluepad32)
+set(BTSTACK_ROOT ${PICO_SDK_PATH}/lib/btstack)
+include_directories(${CMAKE_CURRENT_LIST_DIR})      # lwipopts.h (pulled in via cyw43_arch_lwip_poll)
+include_directories(${CMAKE_CURRENT_LIST_DIR}/bt)  # btstack_config.h + sdkconfig.h
+include_directories(${BTSTACK_ROOT}/3rd-party/bluedroid/encoder/include)
+include_directories(${BTSTACK_ROOT}/3rd-party/bluedroid/decoder/include)
+include_directories(${BTSTACK_ROOT}/src)
+add_subdirectory(${BLUEPAD32_ROOT}/src/components/bluepad32 libbluepad32)
+
+# libbluepad32's CMake hard-links pico_cyw43_arch_none, but this app uses lwip
+# (pico_cyw43_arch_lwip_poll) for OTA. The two cyw43_arch backends are mutually
+# exclusive, so rewrite bluepad32's cyw43 dependency to match the app's. This
+# keeps the submodule pristine (no in-tree edits to survive updates).
+function(_sidepad_fix_bluepad32_cyw43 prop)
+    get_target_property(_libs bluepad32 ${prop})
+    if(_libs)
+        list(REMOVE_ITEM _libs pico_cyw43_arch_none)
+        list(APPEND _libs pico_cyw43_arch_lwip_poll)
+        set_target_properties(bluepad32 PROPERTIES ${prop} "${_libs}")
+    endif()
+endfunction()
+_sidepad_fix_bluepad32_cyw43(LINK_LIBRARIES)
+_sidepad_fix_bluepad32_cyw43(INTERFACE_LINK_LIBRARIES)
+
 # Tell CMake where to find other source code
 add_subdirectory(${FATFS_SDK_PATH}/src build)
   
@@ -108,6 +136,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         blink.c
         chandler.c
         commemul.c
+        controller.c
         display.c
         display_term.c
         download.c
@@ -136,6 +165,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     httpc                    # HTTP client
     settings                 # Custom settings library
     u8g2                     # for display
+    bluepad32                # Bluetooth controller support
 )
 
 # Conditionally link the CYW43 architecture library if supported
@@ -143,9 +173,15 @@ if (PICO_CYW43_SUPPORTED)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         pico_cyw43_arch_lwip_poll
 #        pico_cyw43_arch_lwip_threadsafe_background
+        pico_btstack_cyw43
+        pico_btstack_ble
+        pico_btstack_classic     # Bluepad32 needs BR/EDR as well as BLE
         )
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        CYW43_ENABLE_BLUETOOTH=1
+    )
 else()
-    message(WARNING "CYW43 architecture not supported")
+    message(FATAL_ERROR "This app requires a CYW43-capable board (e.g. pico_w) for BLE controller support")
 endif()
 
 # Link custom memmap with reserved memory for ROMs
@@ -161,11 +197,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 target_include_directories(${PROJECT_NAME} BEFORE PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/ff)
 
-# Needed to include lwipopts.h properly
+# Needed to include lwipopts.h, btstack_config.h, sdkconfig.h
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/include
-    ${CMAKE_CURRENT_LIST_DIR}/..)
+    ${CMAKE_CURRENT_LIST_DIR}/..
+    ${CMAKE_CURRENT_LIST_DIR}/bt)
 
 
 # Use reduced space for ROMs

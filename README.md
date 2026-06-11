@@ -1,35 +1,40 @@
-# SidecarTridge Multi-device Microfirmware App template
+# Sidepad
 
-This is the template to create a Microfirmware app for the SidecarTridge Multidevice-app for Atari ST computers.
+Microfirmware for the [SidecarTridge Multi-device](https://sidecartridge.com) by [Neil Rackett](https://x.com/neilrackett)
 
-# ⚠️ ATTENTION! READ THIS FIRST
+## Introduction
 
-The process for creating a microfirmware app from this template is now documented in the official [SidecarTridge Multi-device documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/). To avoid inconsistencies and outdated information, we've centralized the instructions there. Please refer to the official documentation for the latest guidance.
+![Sidepad](desc/sidepad.png)
 
-## Shared 64 KB region layout
+Sidepad enables your SidecarTridge Multi-device to connect almost any Bluetooth gamepad (Xbox One/Series, DualShock, DualSense, Switch Pro, 8BitDo, and more) to your Atari ST and use it as a joystick.
 
-The template now ships with a single source-of-truth layout for the 64 KB shared region (m68k `$FA0000`–`$FAFFFF`, mirrored at RP `0x20030000`):
+Once installed, simply pair your controller, then press ESC and you're ready to play - you don't even need to disconnect your existing joystick, Sidepad works alongside it.
 
-- The cartridge image (m68k header + code) lives in the first **8 KB** (`$FA0000`–`$FA1FFF`). `target/atarist/build.sh` enforces this with a hard size check on `BOOT.BIN`.
-- A small fixed-offset metadata block (`CMD_MAGIC_SENTINEL`, `RANDOM_TOKEN`, `RANDOM_TOKEN_SEED`, 60 × 4-byte indexed shared variables) sits at `$FA2000`.
-- The **APP_FREE** arena (~48 KB at `$FA2300`) is the contiguous space your app should use for its own buffers.
-- The **framebuffer** (8000 B for 320×200 monochrome) sits at the very top of the region (`$FAE0C0`), so an overrun walks off the end of the 64 KB window instead of corrupting the metadata block.
+To see Sidepad working, you can use [PP's mouse and joystick tester](https://atari.8bitchip.info/astopensw.php).
 
-Both sides derive every offset symbolically from the constants in `rp/src/include/chandler.h` (RP-side) and `target/atarist/src/main.s` (m68k side). Apps must never hard-code an address inside the region — always reference the named offset/symbol so the layout stays the single source of truth.
+## Known limitations
 
-See `programming.md` for the full table and the budget rules.
+Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
 
-## User firmware module
+## Installation
 
-The cartridge image is split via `target/atarist/src/userfw.ld` into two sections:
+1. Download the latest files from the [releases page](https://github.com/neilrackett/md-sidepad/releases).
+2. Copy the `.uf2` and `.json` files to the `/apps` folder of your SidecarT's microSD card.
+3. On the Booster screen, press ESC for the app list and select the Sidepad app.
+4. To return to Booster, power on and press X when the menu appears.
 
-- `main.s` at offset `0x0000` (`$FA0000`, 2 KB) — boot, dispatch, terminal.
-- `userfw.s` at offset `0x0800` (`$FA0800`, 6 KB) — your app-specific m68k code.
+## What's next?
 
-`main.s` exposes the user firmware as `USERFW equ (ROM4_ADDR + $800)`. When the RP-side terminal command `f` (`[F]irmware`) is selected, the RP writes `CMD_START = 4` to the cartridge sentinel; the m68k's vsync-polled `check_commands` dispatches to `rom_function`, which `jmp`s to `USERFW`. The default `userfw.s` ships with a Cconws demo that prints `Example firmware load...` to the screen — replace the body with your own logic.
+The main focus is seeing if we can work out how to get games that read the IKBD ACIA interrupt directly to work, but we've had a lots of other ideas too, like:
 
-Adding more modules follows the same `gemdrive.ld`-style pattern used by `md-drives-emulator`: place each new `.text` section in `userfw.ld`, mirror the offset with an `equ` in `main.s`, and add the `.o` target to `target/atarist/Makefile`.
+- Map buttons to keys?
+- Use an analogue stick as a mouse?
+- Multiple gamepads?
+- Support Bluetooth mice?
+- Support Bluetooth keyboard?
+
+Think you can help? Got an idea of your own? We'd love to hear from you, so why not let me know on [X](https://x.com/neilrackett) or submit a PR.
 
 ## License
 
-The source code of the project is licensed under the GNU General Public License v3.0. The full license is accessible in the [LICENSE](LICENSE) file. 
+The source code of the project is licensed under the GNU General Public License v3.0. The full license is accessible in the [LICENSE](LICENSE) file.

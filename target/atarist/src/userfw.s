@@ -1,42 +1,160 @@
-; User firmware module
-; (C) 2026 by Diego Parrilla
+; Sidepad user firmware: inject the BT controller as Atari ST joystick 1.
+; (C) 2026 Neil Rackett
 ; License: GPL v3
 ;
-; This module is the m68k-side "user firmware" that main.s hands control
-; to once the RP signals CMD_START via the cartridge sentinel. The
-; cartridge image places this file at offset $0800 (USERFW = $FA0800);
-; main.s reaches it through `rom_function: jmp USERFW`.
+; Called once (via main.s rom_function) when the RP raises CMD_START.
 ;
-; Replace this body with whatever your app needs to run on the Atari ST
-; side: read shared variables, send commands via send_sync, render
-; directly to screen RAM, etc. The shared-region symbols defined in
-; main.s (RANDOM_TOKEN_ADDR, SHARED_VARIABLES, APP_FREE_ADDR, ...) are
-; available here too via the include.
+; Mechanism
+; ---------
+; The RP writes a packed controller state byte to shared-variable slot 3
+; every loop (bit0=Up, bit1=Down, bit2=Left, bit3=Right, bit6=Fire - the standard
+; IKBD encoding, confirmed on hardware via JOYMOUT). A handler hooked onto the VBL autovector
+; ($70) watches that byte and, when it changes, synthesises a TOS joystick packet
+; [$FF, joy0, joy1] (our state in the joy1 byte) and calls the system joyvec. The
+; real joyvec is left in place, so a physical joystick on port 1 keeps working
+; alongside the controller — whichever one is moved drives joystick 1.
 ;
-; Demo: this stub prints "Example firmware load..." to the GEMDOS
-; console (which lands on the Atari ST screen) and returns. The
-; cartridge is reached after GEMDOS init (CA_INIT bit 27 set in
-; main.s's header), so the Cconws trap is safe to use here.
+; Why hook $70 and not _vblqueue
+; ------------------------------
+; A free _vblqueue slot works during boot but GEM reclaims it for its own VBL
+; routines when the desktop loads, silently de-linking us. The $70 autovector is
+; the OS's VBL entry point and GEM does not replace it (it only adds/removes
+; _vblqueue entries, which the $70 handler walks), so a hook there survives into
+; the desktop. We chain to the saved original so the OS VBL processing still runs.
+;
+; Why copy to RAM
+; ---------------
+; The whole cartridge region ($FA0000-$FAFFFF) is emulated read-only to the
+; ST: code can be fetched/read from it, but stores bus-error. The resident
+; handler needs writable state (saved joyvec, previous sample, packet
+; buffer), so the installer Malloc's a RAM block and copies the resident,
+; position-independent handler into it. Reads of the shared region (the
+; controller byte) still work, so the handler reads slot 3 in place.
 
-	section text
+    section text
 
-; GEMDOS Cconws: print null-terminated string to console.
-;   trap #1, function 9 (.w on stack), string ptr (.l on stack).
-GEMDOS_Cconws		equ 9
+GEMDOS_Malloc       equ 72          ; trap #1
+XBIOS_Kbdvbase      equ 34          ; trap #14 -> KBDVECS pointer in d0
+KBDVECS_JOYVEC_OFF  equ 24          ; joyvec field within KBDVECS (offset 24!)
+VBL_VECTOR          equ $70         ; .l  level-4 (VBL) autovector
+BT_JOY_BYTE         equ $FA201F     ; LSB of shared-var slot 3 (RP writes it)
 
+; -----------------------------------------------------------------------
+; Installer — runs from ROM at USERFW ($FA0800). Only writes to RAM.
+; -----------------------------------------------------------------------
+; a3 holds the RAM block base across the trap calls: GEMDOS/XBIOS may clobber
+; d0-d2/a0-a2, but preserve d3-d7/a3-a6, so a3 survives the traps below.
 userfw:
-	lea	hello_msg(pc), a0	; address of message
-	move.l	a0, -(sp)		; push string pointer
-	move.w	#GEMDOS_Cconws, -(sp)	; push function code
-	trap	#1			; call GEMDOS
-	addq.l	#6, sp			; clean up arguments
-	rts
+    movem.l d0-d2/a0-a3, -(sp)
 
-hello_msg:
-	; ESC E = VT52 clear screen + home cursor
-	dc.b	27,"E"
-	dc.b	"Example firmware load..."
-	dc.b	0,255
-	even
-	dc.l 0
-		
+    ; Malloc a RAM block for the resident handler + its state.
+    move.l  #(resident_end-resident_start), -(sp)
+    move.w  #GEMDOS_Malloc, -(sp)
+    trap    #1
+    addq.l  #6, sp
+    tst.l   d0
+    beq.s   .uf_exit                ; out of memory -> install nothing
+    move.l  d0, a3                  ; a3 = RAM block base (survives traps)
+
+    ; Copy the resident code+data (in ROM) into the RAM block.
+    lea     resident_start(pc), a0  ; PC in ROM -> ROM source address
+    move.l  a3, a1                  ; a1 = destination
+    move.w  #(resident_end-resident_start-1), d1
+.uf_copy:
+    move.b  (a0)+, (a1)+
+    dbf     d1, .uf_copy
+
+    ; Save the ADDRESS of the KBDVECS joyvec slot (kbdvecs+24) into the block.
+    ; The VBL handler dereferences this live each frame, so it always chains to
+    ; whatever joyvec is currently installed -- a joystick reader (game, test
+    ; tool) typically installs its own joyvec AFTER us, and a saved snapshot
+    ; would bypass it.
+    move.w  #XBIOS_Kbdvbase, -(sp)
+    trap    #14
+    addq.l  #2, sp                  ; d0 = KBDVECS pointer
+    move.l  d0, a0
+    lea     KBDVECS_JOYVEC_OFF(a0), a0
+    move.l  a0, (res_joyslot-resident_start)(a3)
+
+    ; Hook the VBL autovector ($70): save the original into the block and point
+    ; $70 at our resident handler (block offset 0), which chains back to it. Mask
+    ; interrupts across the swap so a VBL can't fire mid-update. $70 lives in the
+    ; supervisor-only vector page; the installer runs supervisor at boot, so the
+    ; access is legal.
+    move.w  sr, -(sp)
+    ori.w   #$0700, sr             ; raise IPL to 7 (block interrupts)
+    move.l  VBL_VECTOR.w, (orig_vbl-resident_start)(a3)
+    move.l  a3, VBL_VECTOR.w
+    move.w  (sp)+, sr
+
+    ; The exit banner is printed later by main.s boot_gem (from the RP-composed
+    ; shared-region string), not here -- printing from the installer would land
+    ; back in the terminal print loop and be repainted over. This routine only
+    ; installs the joystick hook.
+
+.uf_exit:
+    movem.l (sp)+, d0-d2/a0-a3
+    rts
+
+; -----------------------------------------------------------------------
+; Resident block — copied verbatim into RAM and run from there. Must be
+; position independent: it references its own data PC-relative and the
+; shared controller byte by absolute address. Entry (offset 0) is installed at
+; the VBL autovector ($70): it runs at VBL interrupt level, preserves every
+; register it touches, and tail-chains into the saved original $70 handler so
+; the OS's normal VBL processing still happens.
+; -----------------------------------------------------------------------
+    even
+resident_start:
+    movem.l d0-d2/a0-a2, -(sp)
+    move.b  BT_JOY_BYTE, d0         ; current controller state (read OK)
+    lea     res_prev(pc), a1
+    cmp.b   (a1), d0
+    beq.s   .res_chain              ; unchanged -> just chain on
+    move.b  d0, (a1)                ; remember new state
+
+    ; Translate to an IKBD joystick byte: the direction bits (0-3) already match
+    ; the IKBD encoding and pass through unchanged; move our fire (bit 6) to the
+    ; IKBD fire position (bit 7).
+    move.b  d0, d1
+    and.b   #$0F, d1
+    btst    #6, d0
+    beq.s   .res_nofire
+    bset    #7, d1
+.res_nofire:
+    ; Build a real IKBD joystick packet and call the CURRENT joyvec (read live
+    ; from the KBDVECS slot). TOS delivers joystick packets as three bytes
+    ; [$FF, joystick0, joystick1] with the $FF header at an ODD address, so a
+    ; consumer that reads `move.w 1(a0)` (e.g. PP's JOYMOUT tester) gets joy0/joy1
+    ; as an aligned word. We drive joystick 1, so our state goes in the joy1 byte
+    ; and joy0 is left idle. res_pkt is even-aligned, so res_pkt+1 is the odd
+    ; header byte we hand to the vector.
+    lea     res_pkt(pc), a0
+    move.b  #$FF, 1(a0)             ; header at odd address (res_pkt+1)
+    clr.b   2(a0)                   ; joystick 0 = idle
+    move.b  d1, 3(a0)              ; joystick 1 = our state
+    move.l  res_joyslot(pc), a1     ; address of the KBDVECS joyvec slot
+    move.l  (a1), d2                ; current joyvec (live read)
+    beq.s   .res_chain              ; no handler installed -> skip
+    move.l  d2, a1
+    addq.l  #1, a0                  ; a0 -> $FF header (odd address)
+    jsr     (a1)                    ; joyvec convention: a0 -> [$FF, joy0, joy1]
+.res_chain:
+    movem.l (sp)+, d0-d2/a0-a2
+    move.l  orig_vbl(pc), -(sp)     ; chain into the original VBL handler...
+    rts                             ; ...which rte's, popping the interrupt frame
+
+    even
+res_prev:
+    dc.b    0
+    even
+res_pkt:
+    dc.b    0,0,0,0
+    even
+res_joyslot:
+    dc.l    0
+    even
+orig_vbl:
+    dc.l    0
+resident_end:
+    even

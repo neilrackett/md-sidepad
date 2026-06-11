@@ -42,6 +42,15 @@ int main() {
   // damage the hardware, but it's possible to make the hardware unstable.
   vreg_set_voltage(RP2040_VOLTAGE);
 
+  // If the previous run requested a return to Booster (reset_reboot_to_booster),
+  // honour it now while the hardware is still pristine - this is the same clean
+  // jump main() performs on a config failure, but reached via a full chip reset
+  // so none of the app's pio0/DMA state is left running to corrupt Booster.
+  if (watchdog_hw->scratch[0] == RESET_BOOSTER_MAGIC) {
+    watchdog_hw->scratch[0] = 0;
+    reset_jump_to_booster();
+  }
+
   // A note about outputting debug information through the UART. It's not
   // recommended to output debug information through the UART in a production
   // environment in the callback functions of the DMAs used to communicate with

@@ -1,18 +1,21 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "APP DEV Template",
-  "description": "Microfirmware Application Template for Atari ST",
-  "image": "https://placehold.co/256x256/png",
+  "name": "Sidepad",
+  "description": "Sidepad enabled you to connect any Bluetooth gamepad to your Atari ST and use it as a joystick. For more information, visit https://github.com/neilrackett/md-sidepad",
+  "image": "https://atarist.neilrackett.com/<APP_UUID>.png",
   "tags": [
-    "Sample",
+    "Bluetooth",
+    "Controller",
+    "Gamepad",
+    "Joystick"
   ],
   "devices": [
-    "ST",
-    "STE",
-    "MegaST",
-    "MegaSTE"
+    "Atari ST",
+    "Atari STE",
+    "Atari MegaST",
+    "Atari MegaSTE"
   ],
-  "binary": "https://atarist.sidecartridge.com/<APP_UUID>-<APP_VERSION>.uf2",
+  "binary": "https://atarist.neilrackett.com/<APP_UUID>-<APP_VERSION>.uf2",
   "md5": "<BINARY_MD5_HASH>",
   "version": "<APP_VERSION>"
 }

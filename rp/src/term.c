@@ -178,6 +178,11 @@ static char screen[TERM_SCREEN_SIZE];
 static uint8_t cursorX = 0;
 static uint8_t cursorY = 0;
 
+// Reverse-video attribute, toggled by VT52 ESC p (on) / ESC q (off). Applies to
+// characters printed while set. Not stored per-cell in `screen`, so it does not
+// survive a scroll/redraw — intended for absolutely-positioned static UI text.
+static bool inverseVideo = false;
+
 static uint8_t menuRowSsid = 0;
 static uint8_t menuRowSelect = 0;
 static uint8_t menuRowSd = 0;
@@ -238,7 +243,11 @@ static void termScrollUp(void) {
 // Prints a character to the screen, handles scrolling
 static void termPutChar(char chr) {
   screen[cursorY * TERM_SCREEN_SIZE_X + cursorX] = chr;
-  display_termChar(cursorX, cursorY, chr);
+  if (inverseVideo) {
+    display_termCharInverse(cursorX, cursorY, chr);
+  } else {
+    display_termChar(cursorX, cursorY, chr);
+  }
   cursorX++;
   if (cursorX >= TERM_SCREEN_SIZE_X) {
     cursorX = 0;
@@ -357,6 +366,12 @@ static void vt52ProcessSequence(const char *seq, size_t length) {
         }
         termRenderChar('\0');
       }
+      break;
+    case 'p':  // Reverse video on (Atari VT52)
+      inverseVideo = true;
+      break;
+    case 'q':  // Reverse video off (Atari VT52)
+      inverseVideo = false;
       break;
     default:
       // Unrecognized sequence. Optionally, print or ignore.

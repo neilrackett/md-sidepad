@@ -42,6 +42,16 @@
 void display_termChar(uint8_t col, uint8_t row, char chr);
 
 /**
+ * @brief Draws a character glyph in reverse video (solid cell, glyph punched
+ * out in the background colour) at the specified grid position.
+ *
+ * @param col The column index where the character should be drawn.
+ * @param row The row index where the character should be drawn.
+ * @param chr The character (glyph) to be displayed inverted.
+ */
+void display_termCharInverse(uint8_t col, uint8_t row, char chr);
+
+/**
  * @brief Draws a solid block at the cursor position.
  *
  * This function renders a filled rectangular block on the display.
