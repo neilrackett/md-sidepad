@@ -452,12 +452,24 @@ static void reset_game(void)
 
 static void ship_hit(void)
 {
-    int i;
+    int cx = sx >> FP, cy = sy >> FP;
+    int t, k, i;
 
     lives--;
+    /* the ship bursts into a spray of vector shrapnel */
+    for (t = 3; t < 21; t++) {
+        clear_back();
+        draw_status();
+        for (i = 0; i < MAX_AST; i++)
+            if (ast[i].on)
+                draw_ast(&ast[i]);
+        for (k = 0; k < 8; k++)
+            line(cx + dirx(k * 4 + 2, t / 2), cy + diry(k * 4 + 2, t / 2),
+                 cx + dirx(k * 4 + 2, t), cy + diry(k * 4 + 2, t),
+                 (k & 1) ? 0 : 1);
+        flip();
+    }
     reset_ship();
-    for (i = 0; i < 25; i++)
-        Vsync();
 }
 
 static void fire_bullet(void)

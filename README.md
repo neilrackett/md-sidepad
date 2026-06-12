@@ -12,11 +12,19 @@ Once installed, simply pair your controller, press M if you'd like to use the ri
 
 To see Sidepad working, you can use [PP's mouse and joystick tester](https://atari.8bitchip.info/astopensw.php).
 
-## Known limitations
+## Examples
 
-Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
+We've included great games to test your Bluetooth controller with, all available in the [examples](examples/) folder:
 
-Development has focussed on Xbox One/Series gamepads, so if you have a different controller, please let us know how you get on.
+| Name             | Description                                              | Filename                             | Mouse | Joystick |
+| ---------------- | -------------------------------------------------------- | ------------------------------------ | :---: | :------: |
+| Sidepad Invaders | Blast the descending alien hordes, Space Invaders style  | [INVADERS.TOS](examples/invaders/)   |       |    ✓     |
+| Sideroids        | Spin, thrust and shoot the asteroids before they get you | [SIDEROID.TOS](examples/sideroids/)  |       |    ✓     |
+| Breakpad         | Colourful Breakout-style brick basher                    | [BREAKPAD.TOS](examples/breakpad/)   |   ✓   |    ✓     |
+| Landing Pad      | Touch down gently on the pads, Lunar Lander style        | [LANDPAD.TOS](examples/landingpad/)  |       |    ✓     |
+| Sidepong         | Two-player Pong: mouse vs joystick, first to 11          | [SIDEPONG.TOS](examples/sidepong/)   |   ✓   |    ✓     |
+| Launchpad        | Defend your cities, Missile Command style                | [LAUNCHPD.TOS](examples/launchpad/)  |   ✓   |    ✓     |
+| Sidewinder       | Classic snake: eat the apples, don't bite your tail      | [SIDEWIND.TOS](examples/sidewinder/) |       |    ✓     |
 
 ## Installation
 
@@ -24,6 +32,12 @@ Development has focussed on Xbox One/Series gamepads, so if you have a different
 2. Copy the `.uf2` and `.json` files to the `/apps` folder of your SidecarT's microSD card.
 3. On the Booster screen, press ESC for the app list and select the Sidepad app.
 4. To return to Booster, power on and press X when the menu appears.
+
+## Known limitations
+
+Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
+
+Development has focussed on Xbox One/Series gamepads, so if you have a different controller, please let us know how you get on.
 
 ## What's next?
 

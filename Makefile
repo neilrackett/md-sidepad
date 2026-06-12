@@ -20,6 +20,14 @@ debug:
 	@echo "Using APP_UUID_KEY: $(APP_UUID_KEY_RESOLVED)"
 	./build.sh pico_w debug "$(APP_UUID_KEY_RESOLVED)"
 
+## Build all example games (requires atarist-toolkit-docker / stcmd)
+.PHONY: examples
+examples:
+	@for d in examples/*/; do \
+		echo "==> $$d"; \
+		( cd "$$d" && stcmd make ) || exit 1; \
+	done
+
 ## Tag this version
 .PHONY: tag
 tag:

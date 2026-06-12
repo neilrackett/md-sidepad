@@ -95,6 +95,12 @@ static const unsigned short spr_bomb[BOMB_H] = {
     0x8000, 0x4000, 0x8000, 0x4000, 0x8000, 0x4000
 };
 
+/* two debris frames for the exploding ship */
+static const unsigned short spr_boom[2][PLAYER_H] = {
+    { 0x1084, 0x4420, 0x1290, 0x844A, 0x2921, 0x4288, 0x1424, 0x8942 },
+    { 0x4212, 0x0920, 0x2409, 0x48A4, 0x1248, 0x9122, 0x2484, 0x4851 }
+};
+
 /* 8x8 font, only the glyphs the game needs */
 static const char font_chars[] = "0123456789ACDEFGIMNOPRSV";
 static const unsigned char font[][8] = {
@@ -328,14 +334,26 @@ static void spawn_bomb(void)
 
 static void player_hit(void)
 {
-    int i;
+    int i, r, c;
 
     lives--;
     for (i = 0; i < MAX_BOMBS; i++)
         bombs[i].on = 0;
+    bullet_on = 0;
+    /* the ship explodes in a flicker of debris; the aliens pause */
+    for (i = 0; i < 40; i++) {
+        clear_back();
+        draw_status();
+        for (r = 0; r < ALIEN_ROWS; r++)
+            for (c = 0; c < ALIEN_COLS; c++)
+                if (alien_alive[r][c])
+                    draw_sprite(gx + c * ALIEN_DX, gy + r * ALIEN_DY,
+                                spr_alien[anim], ALIEN_H, 0);
+        draw_sprite(px - 2, PLAYER_Y, spr_boom[(i >> 2) & 1], PLAYER_H,
+                    (i >> 3) & 1);
+        flip();
+    }
     px = (320 - PLAYER_W) / 2;
-    for (i = 0; i < 25; i++)
-        Vsync();
 }
 
 static void play_frame(void)
