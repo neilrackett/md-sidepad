@@ -1,5 +1,5 @@
 /*
- * asteroids.c — SIDEROIDS, a simple Asteroids-style game for the
+ * sideroids.c — SIDEROIDS, a simple Asteroids-style game for the
  * Atari ST (low resolution).
  *
  * Joystick input is read by hooking the IKBD joystick vector (joyvec,
