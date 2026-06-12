@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - __disabled__
     tags:
       - 'v*'
   workflow_dispatch:
