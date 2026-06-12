@@ -15,6 +15,7 @@
 
 #define ACONFIG_PARAM_FOLDER "FOLDER"
 #define ACONFIG_PARAM_MODE "MODE"
+#define ACONFIG_PARAM_MOUSE "MOUSE"  // right-stick-as-mouse toggle (persisted)
 
 #define ACONFIG_SUCCESS 0
 #define ACONFIG_INIT_ERROR -1

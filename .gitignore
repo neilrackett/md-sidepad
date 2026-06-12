@@ -61,3 +61,4 @@ dist/
 .claude/
 .DS_Store
 screenlog.*
+tmp/

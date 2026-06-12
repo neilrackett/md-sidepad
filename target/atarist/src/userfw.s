@@ -1,4 +1,5 @@
-; Sidepad user firmware: inject the BT controller as Atari ST joystick 1.
+; Sidepad user firmware: inject the BT controller as Atari ST joystick 1, and
+; (when mouse mode is on) the right stick as the GEM mouse via the IKBD mousevec.
 ; (C) 2026 Neil Rackett
 ; License: GPL v3
 ;
@@ -36,8 +37,15 @@
 GEMDOS_Malloc       equ 72          ; trap #1
 XBIOS_Kbdvbase      equ 34          ; trap #14 -> KBDVECS pointer in d0
 KBDVECS_JOYVEC_OFF  equ 24          ; joyvec field within KBDVECS (offset 24!)
+KBDVECS_MOUSEVEC_OFF equ 16         ; mousevec field within KBDVECS
 VBL_VECTOR          equ $70         ; .l  level-4 (VBL) autovector
 BT_JOY_BYTE         equ $FA201F     ; LSB of shared-var slot 3 (RP writes it)
+; Mouse packet in shared-var slot 5 ($FA2024), one byte each (RP writes them).
+; move.l reads the slot big-endian, so byte0 is at the lowest address:
+BT_MOUSE_ENABLED    equ $FA2024     ; mouse mode on (1) / off (0)
+BT_MOUSE_BTN        equ $FA2025     ; IKBD button bits (bit1 = left button / R3)
+BT_MOUSE_DX         equ $FA2026     ; signed per-frame dx
+BT_MOUSE_DY         equ $FA2027     ; signed per-frame dy
 
 ; -----------------------------------------------------------------------
 ; Installer — runs from ROM at USERFW ($FA0800). Only writes to RAM.
@@ -75,6 +83,11 @@ userfw:
     move.l  d0, a0
     lea     KBDVECS_JOYVEC_OFF(a0), a0
     move.l  a0, (res_joyslot-resident_start)(a3)
+    ; Save the mousevec slot address too (right-stick-as-mouse). Same live-read
+    ; rationale as joyvec: a reader may install its own mousevec after us.
+    move.l  d0, a0
+    lea     KBDVECS_MOUSEVEC_OFF(a0), a0
+    move.l  a0, (res_mouseslot-resident_start)(a3)
 
     ; Hook the VBL autovector ($70): save the original into the block and point
     ; $70 at our resident handler (block offset 0), which chains back to it. Mask
@@ -106,11 +119,15 @@ userfw:
 ; -----------------------------------------------------------------------
     even
 resident_start:
-    movem.l d0-d2/a0-a2, -(sp)
+    ; Save the FULL register set, not just our scratch: we jsr into the system
+    ; joyvec/mousevec, and mousevec (line-A / AES cursor machinery) can clobber
+    ; d3-d7/a3-a6. Restoring only d0-d2/a0-a2 would leak that corruption back into
+    ; the interrupted program -> intermittent bombs.
+    movem.l d0-d7/a0-a6, -(sp)
     move.b  BT_JOY_BYTE, d0         ; current controller state (read OK)
     lea     res_prev(pc), a1
     cmp.b   (a1), d0
-    beq.s   .res_chain              ; unchanged -> just chain on
+    beq.s   .res_mouse              ; unchanged -> skip joystick, try mouse
     move.b  d0, (a1)                ; remember new state
 
     ; Translate to an IKBD joystick byte: the direction bits (0-3) already match
@@ -135,12 +152,55 @@ resident_start:
     move.b  d1, 3(a0)              ; joystick 1 = our state
     move.l  res_joyslot(pc), a1     ; address of the KBDVECS joyvec slot
     move.l  (a1), d2                ; current joyvec (live read)
-    beq.s   .res_chain              ; no handler installed -> skip
+    beq.s   .res_mouse              ; no handler installed -> skip to mouse
     move.l  d2, a1
     addq.l  #1, a0                  ; a0 -> $FF header (odd address)
+    ; Block the IKBD ACIA interrupt (IPL 6) across the call, same as the mousevec
+    ; call below: driving joyvec from the VBL (IPL 4) leaves the ACIA unmasked, so
+    ; a real IKBD packet could otherwise re-enter joyvec on top of us.
+    move.w  sr, -(sp)
+    ori.w   #$0700, sr
     jsr     (a1)                    ; joyvec convention: a0 -> [$FF, joy0, joy1]
+    move.w  (sp)+, sr
+
+.res_mouse:
+    ; --- Mouse: while enabled, inject a relative IKBD mouse packet every frame
+    ; the stick is deflected (relative deltas accumulate) or the button changed.
+    ; Calls the live mousevec, so GEM's cursor (read via graf_mkstate) moves.
+    tst.b   BT_MOUSE_ENABLED
+    beq.s   .res_chain              ; mouse mode off -> just chain on
+    move.b  BT_MOUSE_BTN, d0        ; IKBD buttons (bit1 = left = R3)
+    move.b  BT_MOUSE_DX, d1         ; signed dx
+    move.b  BT_MOUSE_DY, d2         ; signed dy
+    tst.b   d1
+    bne.s   .res_domouse            ; moving in x -> inject
+    tst.b   d2
+    bne.s   .res_domouse            ; moving in y -> inject
+    lea     res_mprev(pc), a1       ; idle: inject only if the button changed
+    cmp.b   (a1), d0
+    beq.s   .res_chain
+.res_domouse:
+    lea     res_mprev(pc), a1
+    move.b  d0, (a1)                ; remember button state
+    or.b    #$F8, d0               ; relative-mouse header: $F8 | buttons
+    lea     res_mpkt(pc), a0
+    move.b  d0, (a0)               ; header
+    move.b  d1, 1(a0)             ; dx
+    move.b  d2, 2(a0)             ; dy
+    move.l  res_mouseslot(pc), a1   ; address of the KBDVECS mousevec slot
+    move.l  (a1), d0                ; current mousevec (live read)
+    beq.s   .res_chain              ; no handler installed -> skip
+    move.l  d0, a1
+    ; Block the IKBD ACIA interrupt (IPL 6) across the call: we drive mousevec
+    ; from the VBL (IPL 4), which leaves the ACIA unmasked, so a real IKBD packet
+    ; could otherwise re-enter mousevec on top of us and corrupt its state.
+    move.w  sr, -(sp)
+    ori.w   #$0700, sr
+    jsr     (a1)                    ; mousevec convention: a0 -> [header, dx, dy]
+    move.w  (sp)+, sr
+
 .res_chain:
-    movem.l (sp)+, d0-d2/a0-a2
+    movem.l (sp)+, d0-d7/a0-a6
     move.l  orig_vbl(pc), -(sp)     ; chain into the original VBL handler...
     rts                             ; ...which rte's, popping the interrupt frame
 
@@ -152,6 +212,15 @@ res_pkt:
     dc.b    0,0,0,0
     even
 res_joyslot:
+    dc.l    0
+    even
+res_mprev:
+    dc.b    0
+    even
+res_mpkt:
+    dc.b    0,0,0
+    even
+res_mouseslot:
     dc.l    0
     even
 orig_vbl:

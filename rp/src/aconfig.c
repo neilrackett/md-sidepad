@@ -3,7 +3,8 @@
 // We don't have any variables because this is the placeholder app
 static SettingsConfigEntry defaultEntries[] = {
     {ACONFIG_PARAM_FOLDER, SETTINGS_TYPE_STRING, "/test"},
-    {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},  // 255: Menu mode
+    {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},   // 255: Menu mode
+    {ACONFIG_PARAM_MOUSE, SETTINGS_TYPE_BOOL, "false"},  // mouse mode off
 };
 
 // Create a global context for our settings

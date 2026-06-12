@@ -9,6 +9,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// Analog triggers (lt/rt, 0..1) count as fire once pulled past this point.
+#define CONTROLLER_TRIGGER_THRESHOLD 0.5f
+
 typedef struct {
   bool initialized;
   bool paired;
@@ -51,6 +54,19 @@ typedef struct {
   bool anyLeft;
   bool anyRight;
   bool anyButton;
+
+  // Digital directions split by source, for the dual joystick/mouse UI:
+  //   pad*    = left stick + D-pad  (shown as the "Joystick" pair)
+  //   rstick* = right stick only    (shown as the "Mouse" pair)
+  // any* above remains the union of both, so joystick injection is unchanged.
+  bool padUp;
+  bool padDown;
+  bool padLeft;
+  bool padRight;
+  bool rstickUp;
+  bool rstickDown;
+  bool rstickLeft;
+  bool rstickRight;
 } controller_state_t;
 
 int controller_init(void);

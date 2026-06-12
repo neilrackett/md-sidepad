@@ -240,6 +240,16 @@ start_rom_code:
 ; Enable bconin to return shift key status
 	or.b #%1000, _conterm.w
 
+; If the RP already wants GEM on entry (the sentinel stays latched at
+; CMD_BOOT_GEM across an ST reset, since the RP never rewrites it), go straight
+; to boot_gem before the print loop copies the framebuffer. Otherwise the stale
+; terminal/visualiser frame still in the framebuffer flashes up for a frame or
+; two before boot_gem clears it. On a cold boot the sentinel is CMD_TERMINAL /
+; CMD_NOP, so this falls through to the terminal as normal.
+	move.l CMD_MAGIC_SENTINEL_ADDR, d6
+	cmp.l #CMD_BOOT_GEM, d6
+	beq boot_gem
+
 ; Get the resolution of the screen
 	get_rez
 	cmp.w #2, d0				; Check if the resolution is 640x400 (high resolution)
@@ -328,8 +338,18 @@ start_rom_code:
 
 GEMDOS_Cconws		equ 9						; trap #1 -> print null-terminated string
 EXIT_FLAG_ADDR		equ (SHARED_VARIABLES + (4 * 4) + 3)	; connected flag, LSB of slot 4 ($FA2023)
+MOUSE_ENABLED_ADDR	equ (SHARED_VARIABLES + (5 * 4))		; mouse-mode flag, byte 0 of slot 5 ($FA2024)
 
 boot_gem:
+	; (Re)install the VBL injection hook before booting to the desktop. boot_gem
+	; runs on EVERY boot -- including after an ST reset, where the sentinel is
+	; still latched at CMD_BOOT_GEM so check_commands comes straight here and the
+	; CMD_START path (which normally installs) never runs. rom_function is
+	; idempotent (userfw_installed guard, freshly zero in the relocated RAM copy
+	; after a reset), so this installs once per boot and is a no-op on the first
+	; boot where CMD_START already installed. bsr/rts is stack-balanced, so the
+	; final rts below still unwinds the print loop back to TOS.
+	bsr	rom_function
 	; Print the exit banner via the VT52 console, then return to TOS to continue
 	; booting to the GEM desktop. boot_gem is reached via a beq from
 	; check_commands inside the print loop, at the same stack level as the
@@ -337,13 +357,18 @@ boot_gem:
 	; (not from USERFW, which returns into the loop) means the framebuffer copy
 	; stops right after, so the banner persists on screen.
 	;
-	; Both banners (VT52 clear + fixed text) live here in ROM (read from the
+	; All banners (VT52 clear + fixed text) live here in ROM (read from the
 	; cartridge, which is readable), so nothing is subject to the unreliable
 	; shared-region string transfer; the RP supplies only the connected flag
-	; (slot 4) to pick between them.
-	lea	bg_msg_conn(pc), a0			; ESC E + "Sidepad connected" + blank line
-	tst.b	EXIT_FLAG_ADDR
-	bne.s	.bg_print
+	; (slot 4) and the mouse-mode flag (slot 5) to pick between them.
+	tst.b	EXIT_FLAG_ADDR				; connected?
+	beq.s	.bg_noconn
+	lea	bg_msg_joy(pc), a0			; connected: joystick...
+	tst.b	MOUSE_ENABLED_ADDR			; ...or joystick + mouse?
+	beq.s	.bg_print
+	lea	bg_msg_joymouse(pc), a0
+	bra.s	.bg_print
+.bg_noconn:
 	lea	bg_msg_noconn(pc), a0			; ESC E + "Sidepad not connected" + blank line
 .bg_print:
 	move.l	a0, -(sp)
@@ -351,8 +376,10 @@ boot_gem:
 	trap	#1
 	addq.l	#6, sp
 	rts
-bg_msg_conn:
-	dc.b	27,"E","Sidepad connected",13,10,13,10,0
+bg_msg_joy:
+	dc.b	27,"E","Sidepad connected: joystick",13,10,13,10,0
+bg_msg_joymouse:
+	dc.b	27,"E","Sidepad connected: joystick and mouse",13,10,13,10,0
 bg_msg_noconn:
 	dc.b	27,"E","Sidepad not connected",13,10,13,10,0
 	even

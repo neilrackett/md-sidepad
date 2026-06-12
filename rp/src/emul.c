@@ -48,6 +48,19 @@
 // overlaps this.
 #define SIDEPAD_EXIT_FLAG_SLOT 4
 
+// Shared-variable slot carrying the BT mouse packet to the m68k userfw hook when
+// mouse mode is on (right stick -> GEM cursor). Packed big-endian, so the m68k
+// reads (at $FA2024): byte0 = enabled, byte1 = buttons (bit1 = left / R3),
+// byte2 = signed dx, byte3 = signed dy (per-frame deltas). Step 2 only publishes
+// it; the m68k does not read it yet (that is step 3).
+#define SIDEPAD_BT_MOUSE_SLOT 5
+
+// Right-stick-as-mouse tuning (analog, proportional). Deadzone around centre
+// (0.5) below which the stick is idle, and the max per-frame cursor delta at
+// full deflection. Both are feel parameters to tune on hardware.
+#define SIDEPAD_MOUSE_DEADZONE 0.15f
+#define SIDEPAD_MOUSE_MAX_SPEED 10
+
 enum {
   APP_MODE_SETUP = 255  // Setup
 };
@@ -121,6 +134,30 @@ static void appendLineAt(char *buffer, size_t bufferSize, size_t *offset,
 // the fire box at col 12 to leave exactly one empty column (11) between them.
 #define FIRE_BOX_COL 12  // left screen column of the fire box
 
+// Mouse mode draws a second pair: an exact clone of the joystick pair shifted to
+// the right half (direction box left, button box on its right). Direction box
+// cols 22..32, button box cols 34..38 (the rightmost rendered cell). Titles sit
+// one blank row below both boxes (box bottom is DIR_BOX_ROW + INNER_H + 1).
+#define MOUSE_DIR_BOX_COL 22
+#define MOUSE_FIRE_BOX_COL 34
+#define VIS_TITLE_ROW (DIR_BOX_ROW + DIR_BOX_INNER_H + 3)
+
+// Right-stick-as-mouse toggle ([M] in the controller UI). Persisted to per-app
+// config (ACONFIG_PARAM_MOUSE): loaded at startup and saved on each toggle, so
+// the choice survives reboots.
+static bool mouseMode = false;
+
+// Auto-exit countdown: once a controller connects, the terminal counts down for
+// SIDEPAD_AUTOEXIT_SECONDS then exits to the desktop as if ESC was pressed. Any
+// key cancels the running countdown for the rest of the session (autoExitCancelled
+// is sticky, so a later disconnect/reconnect does not restart it). A disconnect
+// alone just stops the current run; reconnecting restarts it unless it was
+// key-cancelled.
+#define SIDEPAD_AUTOEXIT_SECONDS 10
+static bool autoExitActive = false;
+static bool autoExitCancelled = false;
+static absolute_time_t autoExitDeadline;
+
 // Box-drawing and block glyphs from u8g2_font_amstrad_cpc_extended_8f. Codes
 // confirmed by decoding the font bitmaps (see GLYPH debug screen):
 //   128 vertical, 129 horizontal, 131/132/133/130 = TL/TR/BR/BL corners,
@@ -176,6 +213,35 @@ static void drawBox(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t topRow,
   }
 }
 
+// Draws one direction+button visualiser pair: a direction box (with the blob
+// pushed to the active 8-way position) at dirCol and a button box at fireCol.
+static void drawJoyPair(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t dirCol,
+                        uint8_t fireCol, bool up, bool down, bool left,
+                        bool right, bool fire) {
+  int blockRow = (DIR_BOX_INNER_H - DIR_BLOCK_SIZE) / 2;
+  int blockCol = (DIR_BOX_INNER_W - DIR_BLOCK_SIZE) / 2;
+  if (up) blockRow = 0;
+  if (down) blockRow = DIR_BOX_INNER_H - DIR_BLOCK_SIZE;
+  if (left) blockCol = 0;
+  if (right) blockCol = DIR_BOX_INNER_W - DIR_BLOCK_SIZE;
+
+  drawBox(lines, DIR_BOX_ROW, dirCol, DIR_BOX_INNER_W, DIR_BOX_INNER_H, '\0',
+          blockRow, blockCol, DIR_BLOCK_SIZE);
+  drawBox(lines, DIR_BOX_ROW, fireCol, FIRE_BOX_INNER_W, FIRE_BOX_INNER_H,
+          fire ? BLOCK_CHAR : '\0', -1, -1, 1);
+}
+
+// Left-aligns a title under a direction box, starting one char in from the box's
+// left edge (dirCol + 1, the box's inner-left column) at the given row.
+static void drawTitle(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t row,
+                      uint8_t dirCol, const char *text) {
+  size_t len = strlen(text);
+  size_t start = dirCol + 1;
+  if (start + len <= TERM_SCREEN_SIZE_X) {
+    memcpy(lines[row] + start, text, len);
+  }
+}
+
 static void renderControllerScreen(const controller_state_t *state,
                                    bool forceFullRefresh) {
   static char previousLines[UI_ROW_COUNT][TERM_SCREEN_SIZE_X + 1] = {{0}};
@@ -214,21 +280,44 @@ static void renderControllerScreen(const controller_state_t *state,
   if (statusLen > TERM_SCREEN_SIZE_X) statusLen = TERM_SCREEN_SIZE_X;
   memcpy(currentLines[2], status, statusLen);
 
-  // Blob top-left position: centred in the inner playfield, then pushed fully
-  // to an edge per active direction so diagonals work just like a real stick.
-  // Position is the blob's top-left cell, so it ranges 0..(inner - blockSize).
-  int blockRow = (DIR_BOX_INNER_H - DIR_BLOCK_SIZE) / 2;
-  int blockCol = (DIR_BOX_INNER_W - DIR_BLOCK_SIZE) / 2;
-  if (state->anyUp) blockRow = 0;
-  if (state->anyDown) blockRow = DIR_BOX_INNER_H - DIR_BLOCK_SIZE;
-  if (state->anyLeft) blockCol = 0;
-  if (state->anyRight) blockCol = DIR_BOX_INNER_W - DIR_BLOCK_SIZE;
+  // Auto-exit countdown message, one line below the status/name line. Shown only
+  // while the countdown is running; when it is not, row 3 stays blank and the
+  // line diff clears any previous message.
+  if (autoExitActive) {
+    int64_t remUs = absolute_time_diff_us(get_absolute_time(), autoExitDeadline);
+    int secs = (int)((remUs + 999999) / 1000000);  // ceil to whole seconds
+    if (secs < 1) secs = 1;                         // never display 0; loop exits
+    char countdown[TERM_SCREEN_SIZE_X + 1];
+    int n = snprintf(countdown, sizeof(countdown),
+                     "Exit in %ds (any key to cancel)", secs);
+    size_t countdownLen = (n < 0) ? 0 : (size_t)n;
+    if (countdownLen > TERM_SCREEN_SIZE_X) countdownLen = TERM_SCREEN_SIZE_X;
+    memcpy(currentLines[3], countdown, countdownLen);
+  }
 
-  drawBox(currentLines, DIR_BOX_ROW, DIR_BOX_COL, DIR_BOX_INNER_W,
-          DIR_BOX_INNER_H, '\0', blockRow, blockCol, DIR_BLOCK_SIZE);
-
-  drawBox(currentLines, DIR_BOX_ROW, FIRE_BOX_COL, FIRE_BOX_INNER_W,
-          FIRE_BOX_INNER_H, state->anyButton ? BLOCK_CHAR : '\0', -1, -1, 1);
+  // Visualiser(s). Mouse mode off: a single pair shows the combined joystick
+  // (both sticks + D-pad), exactly as before. Mouse mode on: the left pair shows
+  // the joystick (left stick + D-pad, fire excluding the R3 mouse click) and a
+  // cloned right pair shows the mouse (right stick + R3), each titled below.
+  // Step 1 is visual only: the actual joystick injection still uses any* either
+  // way, so the pad reacts identically with mouse mode on or off.
+  if (mouseMode) {
+    bool joyFire = state->btnA || state->btnB || state->btnX || state->btnY ||
+                   state->btnLB || state->btnRB || state->btnLS ||
+                   state->lt > CONTROLLER_TRIGGER_THRESHOLD ||
+                   state->rt > CONTROLLER_TRIGGER_THRESHOLD;
+    drawJoyPair(currentLines, DIR_BOX_COL, FIRE_BOX_COL, state->padUp,
+                state->padDown, state->padLeft, state->padRight, joyFire);
+    drawJoyPair(currentLines, MOUSE_DIR_BOX_COL, MOUSE_FIRE_BOX_COL,
+                state->rstickUp, state->rstickDown, state->rstickLeft,
+                state->rstickRight, state->btnRS);
+    drawTitle(currentLines, VIS_TITLE_ROW, DIR_BOX_COL, "Joystick");
+    drawTitle(currentLines, VIS_TITLE_ROW, MOUSE_DIR_BOX_COL, "Mouse (RS)");
+  } else {
+    drawJoyPair(currentLines, DIR_BOX_COL, FIRE_BOX_COL, state->anyUp,
+                state->anyDown, state->anyLeft, state->anyRight,
+                state->anyButton);
+  }
 
   // Bottom two rows: a horizontal rule then the controls. Each currentLines[row]
   // is one independent screen line, so they go in separate rows (not one string
@@ -275,6 +364,7 @@ static void renderControllerScreen(const controller_state_t *state,
     appendFmt(updates, sizeof(updates), &offset, "%s",
               "\x1B" "p" "esc" "\x1B" "q" " Exit  "
               "\x1B" "p" "p" "\x1B" "q" " Pair  "
+              "\x1B" "p" "m" "\x1B" "q" " Mouse  "
               "\x1B" "p" "x" "\x1B" "q" " Booster");
   }
 
@@ -320,23 +410,95 @@ static bool exitToDesktop = false;
 // Joystick state refresh interval once a game is running (~50 Hz).
 #define SIDEPAD_JOY_POLL_MS 20
 
-// Pack the controller's collapsed 8-way + fire signals into the IKBD joystick
-// byte the m68k VBL hook consumes and publish it to the shared-variable slot
-// the hook polls. Direction bits use the standard IKBD encoding, confirmed on
-// hardware via JOYMOUT: bit0=Up, bit1=Down, bit2=Left, bit3=Right. Fire is
-// carried in bit6 here and moved to the IKBD fire bit (bit7) by userfw.s.
+// Pack the controller's 8-way + fire signals into the IKBD joystick byte the
+// m68k VBL hook consumes and publish it to the shared-variable slot the hook
+// polls. Direction bits use the standard IKBD encoding, confirmed on hardware
+// via JOYMOUT: bit0=Up, bit1=Down, bit2=Left, bit3=Right. Fire is carried in
+// bit6 here and moved to the IKBD fire bit (bit7) by userfw.s.
+//
+// In mouse mode the right stick drives the cursor, so the joystick uses left
+// stick + D-pad only (pad*) and fire excludes the right-stick click (R3, now the
+// mouse button). Mouse mode off = the union of both sticks + D-pad, as before.
 static void writeBtJoyState(void) {
   controller_state_t btState = {0};
   controller_getState(&btState);
   uint8_t bt = 0;
-  if (btState.anyUp) bt |= 0x01;
-  if (btState.anyDown) bt |= 0x02;
-  if (btState.anyLeft) bt |= 0x04;
-  if (btState.anyRight) bt |= 0x08;
-  if (btState.anyButton) bt |= 0x40;
+  if (mouseMode) {
+    if (btState.padUp) bt |= 0x01;
+    if (btState.padDown) bt |= 0x02;
+    if (btState.padLeft) bt |= 0x04;
+    if (btState.padRight) bt |= 0x08;
+    // Fire = any face/shoulder/left-thumb button or pulled trigger, but NOT R3
+    // (the mouse click).
+    if (btState.btnA || btState.btnB || btState.btnX || btState.btnY ||
+        btState.btnLB || btState.btnRB || btState.btnLS ||
+        btState.lt > CONTROLLER_TRIGGER_THRESHOLD ||
+        btState.rt > CONTROLLER_TRIGGER_THRESHOLD) {
+      bt |= 0x40;
+    }
+  } else {
+    if (btState.anyUp) bt |= 0x01;
+    if (btState.anyDown) bt |= 0x02;
+    if (btState.anyLeft) bt |= 0x04;
+    if (btState.anyRight) bt |= 0x08;
+    if (btState.anyButton) bt |= 0x40;
+  }
   uint32_t romBase = (uint32_t)&__rom_in_ram_start__;
   SET_SHARED_VAR(SIDEPAD_BT_JOY_SLOT, (uint32_t)bt, romBase,
                  CHANDLER_SHARED_VARIABLES_OFFSET);
+}
+
+// Map a centred analog axis (0..1, 0.5 = rest) to a signed per-frame cursor
+// delta: zero inside the deadzone, then a linear+quadratic blend up to
+// SIDEPAD_MOUSE_MAX_SPEED at full deflection. The blend (0.5*t + 0.5*t^2) halves
+// the slope near the deadzone edge -> half the minimum speed for finer slow
+// control, while full deflection still reaches the same max.
+static int8_t mouseAxisDelta(float axis) {
+  float off = axis - 0.5f;  // -0.5 .. +0.5
+  float mag = off < 0.0f ? -off : off;
+  if (mag <= SIDEPAD_MOUSE_DEADZONE) {
+    return 0;
+  }
+  float t = (mag - SIDEPAD_MOUSE_DEADZONE) / (0.5f - SIDEPAD_MOUSE_DEADZONE);
+  if (t > 1.0f) t = 1.0f;  // clamp to full deflection
+  float scaled = (0.5f * t + 0.5f * t * t) * (float)SIDEPAD_MOUSE_MAX_SPEED;
+  int delta = (int)(scaled + 0.5f);
+  if (delta > SIDEPAD_MOUSE_MAX_SPEED) delta = SIDEPAD_MOUSE_MAX_SPEED;
+  return (int8_t)(off < 0.0f ? -delta : delta);
+}
+
+// Publish the right-stick-as-mouse packet to the shared region for the m68k VBL
+// hook: enabled flag, left-button (R3) state, and signed per-frame dx/dy. When
+// mouse mode is off, publish a disabled/idle packet so the hook does nothing.
+// Step 2: the m68k does not consume slot 5 yet, so this is verifiable only via
+// the serial log below.
+static void writeBtMouseState(void) {
+  controller_state_t st = {0};
+  controller_getState(&st);
+  uint8_t enabled = 0;
+  uint8_t buttons = 0;
+  int8_t dx = 0;
+  int8_t dy = 0;
+  if (mouseMode) {
+    enabled = 1;
+    dx = mouseAxisDelta(st.rx);
+    dy = mouseAxisDelta(st.ry);
+    if (st.btnRS) buttons |= 0x02;  // IKBD left button = bit 1 ($FA header)
+  }
+  uint32_t v = ((uint32_t)enabled << 24) | ((uint32_t)buttons << 16) |
+               ((uint32_t)(uint8_t)dx << 8) | (uint32_t)(uint8_t)dy;
+  uint32_t romBase = (uint32_t)&__rom_in_ram_start__;
+  SET_SHARED_VAR(SIDEPAD_BT_MOUSE_SLOT, v, romBase,
+                 CHANDLER_SHARED_VARIABLES_OFFSET);
+
+  // Step 2 verification: log only when the packed packet changes, so the serial
+  // console shows the analog mapping without flooding at the poll rate.
+  static uint32_t prevV = 0;
+  if (v != prevV) {
+    prevV = v;
+    DPRINTF("Mouse slot: en=%u btn=0x%02X dx=%d dy=%d\n", (unsigned)enabled,
+            (unsigned)buttons, (int)dx, (int)dy);
+  }
 }
 
 // Publish the connection state to the shared region so the m68k boot_gem handler
@@ -353,11 +515,31 @@ static void writeExitMessage(void) {
                  CHANDLER_SHARED_VARIABLES_OFFSET);
 }
 
+// Load the persisted mouse-mode flag from per-app config into mouseMode.
+static void loadMouseMode(void) {
+  SettingsConfigEntry *entry =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_MOUSE);
+  mouseMode = (entry != NULL) && (strcmp(entry->value, "true") == 0);
+  DPRINTF("Mouse mode loaded from config: %s\n", mouseMode ? "on" : "off");
+}
+
+// Persist the current mouse-mode flag to per-app config flash.
+static void saveMouseMode(void) {
+  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_MOUSE, mouseMode);
+  settings_save(aconfig_getContext(), true);
+}
+
 // Leave the terminal for the GEM desktop and never return: install the m68k
 // joystick hook, publish the exit banner, hand off to boot_gem, then loop
 // forever republishing the joystick byte the resident VBL hook reads. Invoked
 // once the main loop exits with exitToDesktop set.
 static void exitToGemDesktop(void) {
+  // Persist the mouse-mode choice now, on the way out to the desktop: the main
+  // terminal loop has just exited and the m68k handoff bursts have not started,
+  // so this is the one quiescent point for the flash write (the Atari reads ROM
+  // from RAM, so the bus is unaffected by the brief write).
+  saveMouseMode();
+
   // The joystick injection hook only matters once a game is running, so install
   // it now, as we leave the terminal for the desktop. Installing it earlier
   // would race the VBL handler's cartridge-bus reads against the terminal's
@@ -366,6 +548,7 @@ static void exitToGemDesktop(void) {
   for (int i = 0; i < SIDEPAD_HOOK_START_TICKS; i++) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
     writeBtJoyState();
+    writeBtMouseState();  // valid before the hook (step 3) reads slot 5
     controller_poll();
     sleep_ms(SLEEP_LOOP_MS);
   }
@@ -382,15 +565,17 @@ static void exitToGemDesktop(void) {
   for (int i = 0; i < SIDEPAD_BOOT_GEM_TICKS; i++) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
     writeBtJoyState();
+    writeBtMouseState();
     controller_poll();
     sleep_ms(SLEEP_LOOP_MS);
   }
-  // Now keep pumping the BLE host and republishing the joystick byte the resident
-  // VBL hook reads.
+  // Now keep pumping the BLE host and republishing the joystick byte (and, when
+  // mouse mode is on, the mouse packet) the resident VBL hook reads.
   while (true) {
     chandler_loop();
     controller_poll();
     writeBtJoyState();
+    writeBtMouseState();
     sleep_ms(SIDEPAD_JOY_POLL_MS);
   }
 }
@@ -412,6 +597,14 @@ static void handleUiKeystroke(char keystroke) {
       DPRINTF("Pair requested\n");
       controller_requestPairing();
       break;
+    case 'm':
+      // Toggle right-stick-as-mouse. Persisted on exit to desktop (see
+      // exitToGemDesktop), not here, to avoid a flash write on every keypress.
+      // Force a full redraw so the second pair / titles appear or disappear.
+      mouseMode = !mouseMode;
+      DPRINTF("Mouse mode: %s\n", mouseMode ? "on" : "off");
+      refreshControllerUI(true);
+      break;
     case 'x':
       // Return to Booster via the clean chip-reset path (loop tail).
       resetDeviceAtBoot = false;
@@ -429,6 +622,14 @@ static void sidepadInputCb(TransmissionProtocol *protocol,
                            uint16_t *payloadPtr) {
   if (protocol == NULL) {
     return;
+  }
+  // Any key cancels a running auto-exit countdown, and keeps it cancelled for the
+  // rest of the session. Only mark cancelled when one was actually running, so
+  // keys pressed before the first connect (e.g. [P] to pair) don't suppress the
+  // first countdown. Keys with actions (p/m/x/esc) still perform them below.
+  if (autoExitActive) {
+    autoExitActive = false;
+    autoExitCancelled = true;
   }
   switch (protocol->command_id) {
     case APP_TERMINAL_START:
@@ -607,6 +808,10 @@ void emul_start() {
   // initialized
   preinit();
 
+  // Restore the persisted mouse-mode choice so the first UI render and the
+  // injection path reflect it without needing the user to toggle.
+  loadMouseMode();
+
   // 6. Bring up the BLE controller host.
   // Sidepad does not use WiFi: the CYW43 chip is shared between WiFi and
   // Bluetooth, and we bring it up in BT-only mode via controller_init()
@@ -647,6 +852,38 @@ void emul_start() {
 
     // Drive the BLE controller host (CYW43 + BTstack poll, status update).
     controller_poll();
+
+    // Auto-exit countdown. Start it when a controller connects (rising edge);
+    // cancel it if the controller drops. When it elapses, exit to the desktop
+    // exactly as ESC would (a keypress cancels it via sidepadInputCb).
+    static bool prevConnected = false;
+    controller_state_t connState = {0};
+    controller_getState(&connState);
+    if (connState.connected && !prevConnected && !autoExitCancelled) {
+      autoExitActive = true;
+      autoExitDeadline = make_timeout_time_ms(SIDEPAD_AUTOEXIT_SECONDS * 1000);
+    } else if (!connState.connected) {
+      autoExitActive = false;
+    }
+    prevConnected = connState.connected;
+    // Any controller input also cancels the running countdown (sticky, like a
+    // keypress). Use the deadzoned directions + buttons; exclude the Guide button
+    // (the wake/connect press) so connecting doesn't self-cancel.
+    if (autoExitActive &&
+        (connState.anyUp || connState.anyDown || connState.anyLeft ||
+         connState.anyRight || connState.anyButton || connState.btnView ||
+         connState.btnMenu)) {
+      DPRINTF("Auto-exit cancelled by controller input\n");
+      autoExitActive = false;
+      autoExitCancelled = true;
+    }
+    if (autoExitActive &&
+        absolute_time_diff_us(get_absolute_time(), autoExitDeadline) <= 0) {
+      DPRINTF("Auto-exit countdown elapsed; exiting to desktop\n");
+      autoExitActive = false;
+      keepActive = false;
+      exitToDesktop = true;
+    }
 
     // Redraw the live controller UI on a fixed cadence.
     if (absolute_time_diff_us(get_absolute_time(), uiRefreshTime) <= 0) {

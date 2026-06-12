@@ -98,26 +98,37 @@ static void map_gamepad(const uni_gamepad_t *gp, controller_state_t *state) {
   state->btnMenu = (gp->misc_buttons & MISC_BUTTON_START) != 0;
   state->btnGuide = (gp->misc_buttons & MISC_BUTTON_SYSTEM) != 0;
 
-  // Collapse both analog sticks and the D-pad into a single digital, 8-way
-  // joystick like a classic Atari ST stick.
-  bool stickUp = (state->ly < (0.5f - CONTROLLER_DEADZONE)) ||
-                 (state->ry < (0.5f - CONTROLLER_DEADZONE));
-  bool stickDown = (state->ly > (0.5f + CONTROLLER_DEADZONE)) ||
-                   (state->ry > (0.5f + CONTROLLER_DEADZONE));
-  bool stickLeft = (state->lx < (0.5f - CONTROLLER_DEADZONE)) ||
-                   (state->rx < (0.5f - CONTROLLER_DEADZONE));
-  bool stickRight = (state->lx > (0.5f + CONTROLLER_DEADZONE)) ||
-                    (state->rx > (0.5f + CONTROLLER_DEADZONE));
+  // Digitize each analog stick into 8-way directions past the deadzone, kept
+  // separate so the UI can show a joystick pair (left stick + D-pad) and a
+  // mouse pair (right stick) independently.
+  bool lUp = state->ly < (0.5f - CONTROLLER_DEADZONE);
+  bool lDown = state->ly > (0.5f + CONTROLLER_DEADZONE);
+  bool lLeft = state->lx < (0.5f - CONTROLLER_DEADZONE);
+  bool lRight = state->lx > (0.5f + CONTROLLER_DEADZONE);
+  state->rstickUp = state->ry < (0.5f - CONTROLLER_DEADZONE);
+  state->rstickDown = state->ry > (0.5f + CONTROLLER_DEADZONE);
+  state->rstickLeft = state->rx < (0.5f - CONTROLLER_DEADZONE);
+  state->rstickRight = state->rx > (0.5f + CONTROLLER_DEADZONE);
 
-  state->anyUp = state->dpadUp || stickUp;
-  state->anyDown = state->dpadDown || stickDown;
-  state->anyLeft = state->dpadLeft || stickLeft;
-  state->anyRight = state->dpadRight || stickRight;
+  // Left stick + D-pad: shown as the joystick pair.
+  state->padUp = state->dpadUp || lUp;
+  state->padDown = state->dpadDown || lDown;
+  state->padLeft = state->dpadLeft || lLeft;
+  state->padRight = state->dpadRight || lRight;
 
-  // Single fire button: any face or shoulder button.
+  // Union of everything: the classic Atari ST 8-way joystick that is actually
+  // injected. Unchanged from before the split, so hardware behaviour is identical.
+  state->anyUp = state->padUp || state->rstickUp;
+  state->anyDown = state->padDown || state->rstickDown;
+  state->anyLeft = state->padLeft || state->rstickLeft;
+  state->anyRight = state->padRight || state->rstickRight;
+
+  // Single fire button: any face or shoulder button, or a pulled trigger.
   state->anyButton = state->btnA || state->btnB || state->btnX || state->btnY ||
                      state->btnLB || state->btnRB || state->btnLS ||
-                     state->btnRS;
+                     state->btnRS ||
+                     state->lt > CONTROLLER_TRIGGER_THRESHOLD ||
+                     state->rt > CONTROLLER_TRIGGER_THRESHOLD;
 }
 
 //

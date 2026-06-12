@@ -6,15 +6,17 @@ Microfirmware for the [SidecarTridge Multi-device](https://sidecartridge.com) by
 
 ![Sidepad](desc/sidepad.png)
 
-Sidepad enables your SidecarTridge Multi-device to connect almost any Bluetooth gamepad (Xbox One/Series, DualShock, DualSense, Switch Pro, 8BitDo, and more) to your Atari ST and use it as a joystick.
+Sidepad enables your SidecarTridge Multi-device to connect almost any Bluetooth gamepad (Xbox One/Series, DualShock, DualSense, Switch Pro, 8BitDo, and more) to your Atari ST and use it as a joystick and (optionally) mouse.
 
-Once installed, simply pair your controller, then press ESC and you're ready to play - you don't even need to disconnect your existing joystick, Sidepad works alongside it.
+Once installed, simply pair your controller, press M if you'd like to use the right analogue stick as a mouse, then press ESC and you're ready to play - you can leave your existing joystick and mouse connected, Sidepad works alongside them.
 
 To see Sidepad working, you can use [PP's mouse and joystick tester](https://atari.8bitchip.info/astopensw.php).
 
 ## Known limitations
 
 Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
+
+Development has focussed on Xbox One/Series gamepads, so if you have a different controller, please let us know how you get on.
 
 ## Installation
 
@@ -25,10 +27,10 @@ Sidepad currently talks to your Atari ST through the system `joyvec`, so games a
 
 ## What's next?
 
-The main focus is seeing if we can work out how to get games that read the IKBD ACIA interrupt directly to work, but we've had a lots of other ideas too, like:
+We've had a lots of other ideas (although that doesn't mean we'll implement them all), like:
 
+- Can we inject IKBD ACIA interrupt directly to support more games?
 - Map buttons to keys?
-- Use an analogue stick as a mouse?
 - Multiple gamepads?
 - Support Bluetooth mice?
 - Support Bluetooth keyboard?
