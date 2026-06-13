@@ -23,10 +23,7 @@ debug:
 ## Build all example games (requires atarist-toolkit-docker / stcmd)
 .PHONY: examples
 examples:
-	@for d in examples/*/; do \
-		echo "==> $$d"; \
-		( cd "$$d" && stcmd make ) || exit 1; \
-	done
+	cd examples && stcmd make
 
 ## Tag this version
 .PHONY: tag

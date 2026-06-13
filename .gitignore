@@ -62,3 +62,4 @@ dist/
 .DS_Store
 screenlog.*
 tmp/
+examples/*.tos
