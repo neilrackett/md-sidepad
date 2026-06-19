@@ -1,7 +1,7 @@
 {
   "uuid": "<APP_UUID>",
   "name": "Sidepad",
-  "description": "Sidepad enabled you to connect any Bluetooth gamepad to your Atari ST and use it as a joystick. For more information, visit https://github.com/neilrackett/md-sidepad",
+  "description": "Sidepad enabled you to connect any Bluetooth gamepad to your Atari ST and use it as a joystick and mouse. For more information and demo games, visit <a href=\"https://github.com/neilrackett/md-sidepad\">https://github.com/neilrackett/md-sidepad</a>.",
   "image": "https://atarist.neilrackett.com/<APP_UUID>.png",
   "tags": [
     "Bluetooth",

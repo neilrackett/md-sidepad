@@ -752,6 +752,46 @@ static int wait_start(const char *m)
 
 /* title screen: missiles rain down behind the title.
  * Returns the chosen mode, or -1 if ESC was hit. */
+/* 3x5 mini-font for the splash credit (low 3 bits per row, MSB = left) */
+static const char font3_chars[] = "X.COM/NEILRAKT";
+static const unsigned char font3[][5] = {
+    { 5, 5, 2, 5, 5 }, /* X */
+    { 0, 0, 0, 0, 2 }, /* . */
+    { 7, 4, 4, 4, 7 }, /* C */
+    { 7, 5, 5, 5, 7 }, /* O */
+    { 5, 7, 7, 5, 5 }, /* M */
+    { 1, 1, 2, 4, 4 }, /* / */
+    { 6, 5, 5, 5, 5 }, /* N */
+    { 7, 4, 6, 4, 7 }, /* E */
+    { 7, 2, 2, 2, 7 }, /* I */
+    { 4, 4, 4, 4, 7 }, /* L */
+    { 6, 5, 6, 5, 5 }, /* R */
+    { 2, 5, 7, 5, 5 }, /* A */
+    { 5, 6, 4, 6, 5 }, /* K */
+    { 7, 2, 2, 2, 2 }, /* T */
+};
+
+/* 3x5 mini text; advance 4px per char (3 wide + 1 gap) */
+static void draw_text3x5(int x, int y, const char *s, int color)
+{
+    while (*s) {
+        if (*s != ' ') {
+            int g = 0;
+            while (font3_chars[g] && font3_chars[g] != *s)
+                g++;
+            if (font3_chars[g]) {
+                unsigned short rows[5];
+                int i;
+                for (i = 0; i < 5; i++)
+                    rows[i] = (unsigned short)font3[g][i] << 13;
+                draw_sprite(x, y, rows, 5, color);
+            }
+        }
+        x += 4;
+        s++;
+    }
+}
+
 static int splash(void)
 {
     int released = 0, i;
@@ -786,6 +826,7 @@ static int splash(void)
             draw_text(76, 88, "PRESS FIRE = JOYSTICK", 1);
             draw_text(76, 104, "LEFT CLICK = MOUSE", 1);
         }
+        draw_text3x5(126, 158, "X.COM/NEILRACKETT", 1);
         flip();
         t++;
         if (esc_pressed())

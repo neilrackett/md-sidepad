@@ -643,6 +643,46 @@ static int wait_fire(const char *msg)
 
 /* title screen: big title, drifting asteroids, slowly rotating ship,
  * blinking prompt. Returns 1 if ESC was hit, 0 when fire starts. */
+/* 3x5 mini-font for the splash credit (low 3 bits per row, MSB = left) */
+static const char font3_chars[] = "X.COM/NEILRAKT";
+static const unsigned char font3[][5] = {
+    { 5, 5, 2, 5, 5 }, /* X */
+    { 0, 0, 0, 0, 2 }, /* . */
+    { 7, 4, 4, 4, 7 }, /* C */
+    { 7, 5, 5, 5, 7 }, /* O */
+    { 5, 7, 7, 5, 5 }, /* M */
+    { 1, 1, 2, 4, 4 }, /* / */
+    { 6, 5, 5, 5, 5 }, /* N */
+    { 7, 4, 6, 4, 7 }, /* E */
+    { 7, 2, 2, 2, 7 }, /* I */
+    { 4, 4, 4, 4, 7 }, /* L */
+    { 6, 5, 6, 5, 5 }, /* R */
+    { 2, 5, 7, 5, 5 }, /* A */
+    { 5, 6, 4, 6, 5 }, /* K */
+    { 7, 2, 2, 2, 2 }, /* T */
+};
+
+/* 3x5 mini text; advance 4px per char (3 wide + 1 gap) */
+static void draw_text3x5(int x, int y, const char *s, int plane)
+{
+    while (*s) {
+        if (*s != ' ') {
+            int g = 0;
+            while (font3_chars[g] && font3_chars[g] != *s)
+                g++;
+            if (font3_chars[g]) {
+                unsigned short rows[5];
+                int i;
+                for (i = 0; i < 5; i++)
+                    rows[i] = (unsigned short)font3[g][i] << 13;
+                draw_sprite(x, y, rows, 5, plane);
+            }
+        }
+        x += 4;
+        s++;
+    }
+}
+
 static int splash(void)
 {
     static const int sizes[5] = { 0, 0, 1, 1, 2 };
@@ -673,6 +713,7 @@ static int splash(void)
         draw_ship_shape(160, 108, (t >> 3) & 31, 10, 1);
         if ((t & 63) < 44) /* blink */
             draw_text(120, 150, "PRESS FIRE", 0);
+        draw_text3x5(126, 190, "X.COM/NEILRACKETT", 0);
         flip();
         t++;
         if (esc_pressed())

@@ -478,6 +478,46 @@ static int wait_fire(const char *m)
 
 /* title screen: a snake slithers across behind the title.
  * Returns 1 if ESC was hit, 0 when fire starts the game. */
+/* 3x5 mini-font for the splash credit (low 3 bits per row, MSB = left) */
+static const char font3_chars[] = "X.COM/NEILRAKT";
+static const unsigned char font3[][5] = {
+    { 5, 5, 2, 5, 5 }, /* X */
+    { 0, 0, 0, 0, 2 }, /* . */
+    { 7, 4, 4, 4, 7 }, /* C */
+    { 7, 5, 5, 5, 7 }, /* O */
+    { 5, 7, 7, 5, 5 }, /* M */
+    { 1, 1, 2, 4, 4 }, /* / */
+    { 6, 5, 5, 5, 5 }, /* N */
+    { 7, 4, 6, 4, 7 }, /* E */
+    { 7, 2, 2, 2, 7 }, /* I */
+    { 4, 4, 4, 4, 7 }, /* L */
+    { 6, 5, 6, 5, 5 }, /* R */
+    { 2, 5, 7, 5, 5 }, /* A */
+    { 5, 6, 4, 6, 5 }, /* K */
+    { 7, 2, 2, 2, 2 }, /* T */
+};
+
+/* 3x5 mini text; advance 4px per char (3 wide + 1 gap) */
+static void draw_text3x5(int x, int y, const char *s, int color)
+{
+    while (*s) {
+        if (*s != ' ') {
+            int g = 0;
+            while (font3_chars[g] && font3_chars[g] != *s)
+                g++;
+            if (font3_chars[g]) {
+                unsigned short rows[5];
+                int i;
+                for (i = 0; i < 5; i++)
+                    rows[i] = (unsigned short)font3[g][i] << 13;
+                draw_sprite(x, y, rows, 5, color);
+            }
+        }
+        x += 4;
+        s++;
+    }
+}
+
 static int splash(void)
 {
     /* sin(2*pi*k/32) * 256, for the demo snake's wave */
@@ -501,6 +541,7 @@ static int splash(void)
         draw_apple((hx + 6) % COLS, 14);
         if ((t & 63) < 44) /* blink */
             draw_text(120, 160, "PRESS FIRE", 1);
+        draw_text3x5(126, 190, "X.COM/NEILRACKETT", 1);
         flip();
         t++;
         if (++tick >= 5) {
