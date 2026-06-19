@@ -257,9 +257,9 @@ static void renderControllerScreen(const controller_state_t *state,
     currentLines[row][TERM_SCREEN_SIZE_X] = '\0';
   }
 
-  // Title row: two leading rule cells, "MD/SIDEPAD", then a rule to the edge
-  // (--MD/SIDEPAD------).
-  const char *title = "MD/SIDEPAD";
+  // Title row: two leading rule cells, "MD/Sidepad", then a rule to the edge
+  // (--MD/Sidepad------).
+  const char *title = "MD/Sidepad";
   size_t titleLen = strlen(title);
   const size_t titleLead = 2;
   memset(currentLines[0], GLYPH_H, titleLead);
