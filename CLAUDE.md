@@ -95,14 +95,14 @@ The RP2040's 2 MB flash is sliced into named regions, and code is responsible fo
 The build assumes Core 0 owns flash writes (`PICO_FLASH_ASSUME_CORE0_SAFE=1`). The PIO bus emulation runs hot — Core 0 also overclocks to 225 MHz at `VREG_VOLTAGE_1_10`.
 
 ### App identity
-`CURRENT_APP_UUID_KEY` (set from the `APP_UUID_KEY` env var at CMake time, with a placeholder default) is the app's UUID4. It must match the `uuid` field in `desc/app.json` and is used as the key into `GLOBAL_LOOKUP_FLASH` to find this app's config sector. Mismatch → app jumps to Booster. Sidepad's UUID is `7795c766-c5a8-4607-bc7d-01c55e03d300`; it is `pico_w`-only (the CYW43 chip is required for BLE).
+`CURRENT_APP_UUID_KEY` (set from the `APP_UUID_KEY` env var at CMake time, with a placeholder default) is the app's UUID4. It must match the `uuid` field in `desc/app.json` and is used as the key into `GLOBAL_LOOKUP_FLASH` to find this app's config sector. Mismatch → app jumps to Booster. MD/Sidepad's UUID is `7795c766-c5a8-4607-bc7d-01c55e03d300`; it is `pico_w`-only (the CYW43 chip is required for BLE).
 
-## Sidepad app specifics
+## MD/Sidepad app specifics
 
-Sidepad pairs a Bluetooth gamepad with the Atari ST and injects it as **joystick 1**. The BLE host is Bluepad32 on the Pico W's CYW43 chip; WiFi is stripped because it shares that chip. The pieces below are hard-won and non-obvious — read this before touching the command path, joystick injection, or the booster/desktop exits.
+MD/Sidepad pairs a Bluetooth gamepad with the Atari ST and injects it as **joystick 1**. The BLE host is Bluepad32 on the Pico W's CYW43 chip; WiFi is stripped because it shares that chip. The pieces below are hard-won and non-obvious — read this before touching the command path, joystick injection, or the booster/desktop exits.
 
 ### Keymap (single-key, set in `sidepadInputCb`)
-`ESC` = exit to GEM desktop (installs the joystick hook on the way out), `P` = pair, `X` = exit to Booster (full chip reset). The template terminal is **line-based** (`term_command_cb` buffers until Enter), so Sidepad registers its **own** `chandler_addCB(sidepadInputCb)` to act on the first keypress. `APP_TERMINAL_START` = ESC, `APP_TERMINAL_KEYSTROKE` = any other key (see `term.h`).
+`ESC` = exit to GEM desktop (installs the joystick hook on the way out), `P` = pair, `X` = exit to Booster (full chip reset). The template terminal is **line-based** (`term_command_cb` buffers until Enter), so MD/Sidepad registers its **own** `chandler_addCB(sidepadInputCb)` to act on the first keypress. `APP_TERMINAL_START` = ESC, `APP_TERMINAL_KEYSTROKE` = any other key (see `term.h`).
 
 ### Joystick injection (`target/atarist/src/userfw.s`)
 - Hook the **VBL autovector `$70`**, *not* a `_vblqueue` slot — GEM reclaims free `_vblqueue` slots when the desktop loads, silently de-linking the hook. `$70` is the OS VBL entry; GEM only adds/removes `_vblqueue` entries (which the `$70` handler walks), so a hook there survives into the desktop. Chain to the saved original.
@@ -116,7 +116,7 @@ Sidepad pairs a Bluetooth gamepad with the Atari ST and injects it as **joystick
 - `main.s` `check_commands`: CMD_START does `bne .no_start / bsr rom_function / bra bypass`. `rom_function` runs the installer **once** via a **PC-relative** `userfw_installed` guard — an absolute sentinel write here would bus-error (read-only cartridge region). `boot_gem` is just `rts`; the cartridge runs as the `CA_INIT` routine (header bit 27 = "after GEMDOS init, before booting from disks"), and the stack is balanced through `pre_auto`→relocation→print-loop, so `rts` returns to TOS and continues booting to the desktop (identical to `md-drives-emulator`).
 
 ### Shared-variable byte order
-`firmware.py` packs little-endian words and the cartridge bus per-word swap cancels at the word-**value** level, so `SET_SHARED_VAR(idx, V)` makes the m68k `move.l SHARED_VARIABLES+idx*4` read back `V`. Sidepad publishes the joystick byte to **slot 3**, whose LSB lands at m68k address **`$FA201F`** (`SHARED_VARIABLES + 3*4 + 3`) — the address `userfw.s` reads.
+`firmware.py` packs little-endian words and the cartridge bus per-word swap cancels at the word-**value** level, so `SET_SHARED_VAR(idx, V)` makes the m68k `move.l SHARED_VARIABLES+idx*4` read back `V`. MD/Sidepad publishes the joystick byte to **slot 3**, whose LSB lands at m68k address **`$FA201F`** (`SHARED_VARIABLES + 3*4 + 3`) — the address `userfw.s` reads.
 
 ### Other gotchas
 - The ROM3 command-receive channel (m68k→RP, used by `send_sync` for keystrokes) needs `commemul_init()` called once at startup. The template shipped without it; it's added in `emul_start()` after `chandler_init()`. No `Keystroke:` logs → check this first. commemul + romemul share **pio0**.

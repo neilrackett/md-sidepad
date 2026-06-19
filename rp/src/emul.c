@@ -257,9 +257,9 @@ static void renderControllerScreen(const controller_state_t *state,
     currentLines[row][TERM_SCREEN_SIZE_X] = '\0';
   }
 
-  // Title row: two leading rule cells, "SIDEPAD", then a rule to the edge
-  // (--SIDEPAD------).
-  const char *title = "SIDEPAD";
+  // Title row: two leading rule cells, "MD/SIDEPAD", then a rule to the edge
+  // (--MD/SIDEPAD------).
+  const char *title = "MD/SIDEPAD";
   size_t titleLen = strlen(title);
   const size_t titleLead = 2;
   memset(currentLines[0], GLYPH_H, titleLead);
@@ -584,7 +584,7 @@ static void showTitle() {
   term_printString(
       "\x1B"
       "E"
-      "Sidepad - " RELEASE_VERSION "\n");
+      "MD/Sidepad - " RELEASE_VERSION "\n");
 }
 
 // Handle a single key shortcut from the controller screen. Sidepad uses the

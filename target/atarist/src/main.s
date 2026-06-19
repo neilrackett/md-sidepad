@@ -377,11 +377,11 @@ boot_gem:
 	addq.l	#6, sp
 	rts
 bg_msg_joy:
-	dc.b	27,"E","Sidepad connected: joystick",13,10,13,10,0
+	dc.b	27,"E","MD/Sidepad connected: joystick",13,10,13,10,0
 bg_msg_joymouse:
-	dc.b	27,"E","Sidepad connected: joystick and mouse",13,10,13,10,0
+	dc.b	27,"E","MD/Sidepad connected: joystick, mouse",13,10,13,10,0
 bg_msg_noconn:
-	dc.b	27,"E","Sidepad not connected",13,10,13,10,0
+	dc.b	27,"E","MD/Sidepad not connected",13,10,13,10,0
 	even
 
 ; Dispatcher for the user firmware module. Reached on CMD_START via the
