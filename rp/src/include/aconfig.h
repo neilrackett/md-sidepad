@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /**
  * File: aconfig.h
  * Author: Diego Parrilla Santamaría
@@ -16,6 +21,7 @@
 #define ACONFIG_PARAM_FOLDER "FOLDER"
 #define ACONFIG_PARAM_MODE "MODE"
 #define ACONFIG_PARAM_MOUSE "MOUSE"  // right-stick-as-mouse toggle (persisted)
+#define ACONFIG_PARAM_HOOK "HOOK"  // VBL/ETV hook-mode toggle (persisted)
 
 #define ACONFIG_SUCCESS 0
 #define ACONFIG_INIT_ERROR -1

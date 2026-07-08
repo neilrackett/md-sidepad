@@ -88,7 +88,18 @@ fi
 echo "File has been resized."
 
 echo "Creating the firmware.h file."
+# firmware.py aborts (ValueError) if the trimmed cartridge image is an odd
+# number of bytes. Without this check the build marches on and the RP build
+# embeds a STALE rp/src/include/target_firmware.h from a previous run, producing
+# a mismatched/broken cartridge (symptom: ST boots straight to the desktop, no
+# terminal). Fail hard instead.
 python firmware.py --input=dist/FIRMWARE.IMG --output=$target_firmware --array_name=target_firmware
+firmware_status=$?
+if [ "$firmware_status" -ne 0 ]; then
+    echo "ERROR: firmware.py failed (status $firmware_status); target_firmware.h NOT regenerated."
+    echo "       (odd-length cartridge image? pad userfw.s so the trimmed size stays even)"
+    exit 6
+fi
 
 cp $target_firmware ../../rp/src/include/$target_firmware
 echo "Copied $target_firmware to rp/src/include/$target_firmware"

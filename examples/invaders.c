@@ -1,4 +1,9 @@
 /*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * invaders.c — simple Space Invaders for the Atari ST (low resolution).
  *
  * Joystick input is read by hooking the IKBD joystick vector (joyvec,

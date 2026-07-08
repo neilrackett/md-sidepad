@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 // Bluepad32 build-time configuration for the Pico W target.
 //
 // Bluepad32 normally gets these from ESP-IDF's "menuconfig" (sdkconfig.h). On

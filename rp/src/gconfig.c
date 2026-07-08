@@ -92,7 +92,11 @@ int gconfig_init(const char *currentAppName) {
 
   DPRINTF("Settings loaded.\n");
 
-  settings_print(&gSettingsCtx, NULL);
+  // Do NOT dump every global-config entry to UART here: gconfig_init() runs in
+  // main() before emul_start()/init_romemul(), and this blocking dump (all the
+  // WIFI_* / HOSTNAME / SD_* entries) delays cartridge serving past TOS's
+  // $FA0000 scan window on a debug build -> the ST boots with no terminal.
+  // settings_print(&gSettingsCtx, NULL);
 
   return GCONFIG_SUCCESS;
 }

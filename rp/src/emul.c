@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 /**
  * File: emul.c
  * Author: Diego Parrilla Santamaría
@@ -48,12 +53,18 @@
 // overlaps this.
 #define SIDEPAD_EXIT_FLAG_SLOT 4
 
-// Shared-variable slot carrying the BT mouse packet to the m68k userfw hook when
-// mouse mode is on (right stick -> GEM cursor). Packed big-endian, so the m68k
-// reads (at $FA2024): byte0 = enabled, byte1 = buttons (bit1 = left / R3),
-// byte2 = signed dx, byte3 = signed dy (per-frame deltas). Step 2 only publishes
-// it; the m68k does not read it yet (that is step 3).
+// Shared-variable slot carrying the BT mouse packet to the m68k userfw hook
+// when mouse mode is on (right stick -> GEM cursor). Packed big-endian, so the
+// m68k reads (at $FA2024): byte0 = enabled, byte1 = buttons (bit1 = left / R3),
+// byte2 = signed dx, byte3 = signed dy (per-frame deltas). Step 2 only
+// publishes it; the m68k does not read it yet (that is step 3).
 #define SIDEPAD_BT_MOUSE_SLOT 5
+
+// Shared-variable slot carrying the VBL/ETV hook-mode flag to the m68k userfw
+// installer, read once when it installs the hook (LSB at m68k $FA202B): 0 = VBL
+// ($70), 1 = ETV ($400). Published before the CMD_START burst in
+// exitToGemDesktop so it is latched when the installer runs.
+#define SIDEPAD_HOOK_MODE_SLOT 6
 
 // Right-stick-as-mouse tuning (analog, proportional). Deadzone around centre
 // (0.5) below which the stick is idle, and the max per-frame cursor delta at
@@ -130,14 +141,15 @@ static void appendLineAt(char *buffer, size_t bufferSize, size_t *offset,
 #define DIR_BOX_COL 0      // left screen column of the direction box
 #define FIRE_BOX_INNER_W 3
 #define FIRE_BOX_INNER_H 3
-// Direction box spans cols 0..(DIR_BOX_COL + DIR_BOX_INNER_W + 1) = 0..10; place
-// the fire box at col 12 to leave exactly one empty column (11) between them.
+// Direction box spans cols 0..(DIR_BOX_COL + DIR_BOX_INNER_W + 1) = 0..10;
+// place the fire box at col 12 to leave exactly one empty column (11) between
+// them.
 #define FIRE_BOX_COL 12  // left screen column of the fire box
 
-// Mouse mode draws a second pair: an exact clone of the joystick pair shifted to
-// the right half (direction box left, button box on its right). Direction box
-// cols 22..32, button box cols 34..38 (the rightmost rendered cell). Titles sit
-// one blank row below both boxes (box bottom is DIR_BOX_ROW + INNER_H + 1).
+// Mouse mode draws a second pair: an exact clone of the joystick pair shifted
+// to the right half (direction box left, button box on its right). Direction
+// box cols 22..32, button box cols 34..38 (the rightmost rendered cell). Titles
+// sit one blank row below both boxes (box bottom is DIR_BOX_ROW + INNER_H + 1).
 #define MOUSE_DIR_BOX_COL 22
 #define MOUSE_FIRE_BOX_COL 34
 #define VIS_TITLE_ROW (DIR_BOX_ROW + DIR_BOX_INNER_H + 3)
@@ -147,12 +159,30 @@ static void appendLineAt(char *buffer, size_t bufferSize, size_t *offset,
 // the choice survives reboots.
 static bool mouseMode = false;
 
+// VBL/ETV hook-mode toggle ([H] in the controller UI). false = VBL ($70), true
+// = ETV ($400). Defaults to ETV (ACONFIG_PARAM_HOOK default is "true"); this
+// initial value is overwritten by loadHookMode() from per-app config at startup.
+// Published to shared-var slot 6 (inline in exitToGemDesktop) on the way out to
+// the desktop so the m68k userfw installer hooks the matching vector. ETV
+// survives programs that replace the VBL vector; the m68k rate-limits it to
+// ~50 Hz to match the VBL route.
+static bool etvMode = true;
+
+// Help-screen toggle (dedicated ST Help key, scan code SCAN_HELP). When true
+// the controller visualiser is replaced by a static help page; the title and
+// footer rows stay so Help/Esc still work. Debounced so Help-key auto-repeat
+// does not flicker the screen.
+#define SCAN_HELP 0x62
+static bool helpVisible = false;
+static absolute_time_t helpLastToggle;
+static bool helpToggleValid = false;
+
 // Auto-exit countdown: once a controller connects, the terminal counts down for
 // SIDEPAD_AUTOEXIT_SECONDS then exits to the desktop as if ESC was pressed. Any
-// key cancels the running countdown for the rest of the session (autoExitCancelled
-// is sticky, so a later disconnect/reconnect does not restart it). A disconnect
-// alone just stops the current run; reconnecting restarts it unless it was
-// key-cancelled.
+// key cancels the running countdown for the rest of the session
+// (autoExitCancelled is sticky, so a later disconnect/reconnect does not
+// restart it). A disconnect alone just stops the current run; reconnecting
+// restarts it unless it was key-cancelled.
 #define SIDEPAD_AUTOEXIT_SECONDS 10
 static bool autoExitActive = false;
 static bool autoExitCancelled = false;
@@ -231,8 +261,8 @@ static void drawJoyPair(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t dirCol,
           fire ? BLOCK_CHAR : '\0', -1, -1, 1);
 }
 
-// Left-aligns a title under a direction box, starting one char in from the box's
-// left edge (dirCol + 1, the box's inner-left column) at the given row.
+// Left-aligns a title under a direction box, starting one char in from the
+// box's left edge (dirCol + 1, the box's inner-left column) at the given row.
 static void drawTitle(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t row,
                       uint8_t dirCol, const char *text) {
   size_t len = strlen(text);
@@ -280,13 +310,14 @@ static void renderControllerScreen(const controller_state_t *state,
   if (statusLen > TERM_SCREEN_SIZE_X) statusLen = TERM_SCREEN_SIZE_X;
   memcpy(currentLines[2], status, statusLen);
 
-  // Auto-exit countdown message, one line below the status/name line. Shown only
-  // while the countdown is running; when it is not, row 3 stays blank and the
-  // line diff clears any previous message.
+  // Auto-exit countdown message, one line below the status/name line. Shown
+  // only while the countdown is running; when it is not, row 3 stays blank and
+  // the line diff clears any previous message.
   if (autoExitActive) {
-    int64_t remUs = absolute_time_diff_us(get_absolute_time(), autoExitDeadline);
+    int64_t remUs =
+        absolute_time_diff_us(get_absolute_time(), autoExitDeadline);
     int secs = (int)((remUs + 999999) / 1000000);  // ceil to whole seconds
-    if (secs < 1) secs = 1;                         // never display 0; loop exits
+    if (secs < 1) secs = 1;  // never display 0; loop exits
     char countdown[TERM_SCREEN_SIZE_X + 1];
     int n = snprintf(countdown, sizeof(countdown),
                      "Exit in %ds (any key to cancel)", secs);
@@ -296,11 +327,11 @@ static void renderControllerScreen(const controller_state_t *state,
   }
 
   // Visualiser(s). Mouse mode off: a single pair shows the combined joystick
-  // (both sticks + D-pad), exactly as before. Mouse mode on: the left pair shows
-  // the joystick (left stick + D-pad, fire excluding the R3 mouse click) and a
-  // cloned right pair shows the mouse (right stick + R3), each titled below.
-  // Step 1 is visual only: the actual joystick injection still uses any* either
-  // way, so the pad reacts identically with mouse mode on or off.
+  // (both sticks + D-pad), exactly as before. Mouse mode on: the left pair
+  // shows the joystick (left stick + D-pad, fire excluding the R3 mouse click)
+  // and a cloned right pair shows the mouse (right stick + R3), each titled
+  // below. Step 1 is visual only: the actual joystick injection still uses any*
+  // either way, so the pad reacts identically with mouse mode on or off.
   if (mouseMode) {
     bool joyFire = state->btnA || state->btnB || state->btnX || state->btnY ||
                    state->btnLB || state->btnRB || state->btnLS ||
@@ -319,10 +350,23 @@ static void renderControllerScreen(const controller_state_t *state,
                 state->anyButton);
   }
 
-  // Bottom two rows: a horizontal rule then the controls. Each currentLines[row]
-  // is one independent screen line, so they go in separate rows (not one string
-  // with \n). Use the box-drawing horizontal glyph, which sits mid-cell, rather
-  // than '_' (cell bottom) so the rule clears the controls text below it.
+  // Help page: when the Help key is toggled on, replace the controller content
+  // area (everything between the title row and the bottom rule) with the static
+  // help text. Drawn last so it overwrites the status/visualiser written above;
+  // the shared title and footer rows are untouched. For now the page is just
+  // the word HELP.
+  if (helpVisible) {
+    for (uint8_t row = 1; row <= UI_ROW_COUNT - 3; row++) {
+      memset(currentLines[row], ' ', TERM_SCREEN_SIZE_X);
+    }
+    memcpy(currentLines[2], "HELP", 4);
+  }
+
+  // Bottom two rows: a horizontal rule then the controls. Each
+  // currentLines[row] is one independent screen line, so they go in separate
+  // rows (not one string with \n). Use the box-drawing horizontal glyph, which
+  // sits mid-cell, rather than '_' (cell bottom) so the rule clears the
+  // controls text below it.
   memset(currentLines[UI_ROW_COUNT - 2], GLYPH_H, TERM_SCREEN_SIZE_X);
   // Overlay the build version near the right end of the rule (----vX.Y.Z--).
   // appendLineAt renders TERM_SCREEN_SIZE_X - 1 cells, so anchor to that and
@@ -355,17 +399,50 @@ static void renderControllerScreen(const controller_state_t *state,
     }
   }
 
-  // Controls footer with reverse-video key names (VT52 ESC p = on, ESC q = off).
-  // Emitted outside the plain-char grid because the escape codes are not
-  // fixed-width cells. Only on a full refresh: the row is static, so it persists
-  // across partial refreshes (the grid never repaints this row).
+  // Controls footer with reverse-video key names (VT52 ESC p = on, ESC q =
+  // off). Emitted outside the plain-char grid because the escape codes are not
+  // fixed-width cells. Only on a full refresh: the row is static, so it
+  // persists across partial refreshes (the grid never repaints this row).
   if (forceFullRefresh) {
     appendMoveAndClearLine(updates, sizeof(updates), &offset, UI_ROW_COUNT - 1);
-    appendFmt(updates, sizeof(updates), &offset, "%s",
-              "\x1B" "p" "esc" "\x1B" "q" " Exit  "
-              "\x1B" "p" "p" "\x1B" "q" " Pair  "
-              "\x1B" "p" "m" "\x1B" "q" " Mouse  "
-              "\x1B" "p" "x" "\x1B" "q" " Booster");
+    appendFmt(updates, sizeof(updates), &offset,
+              "\x1B"
+              "p"
+              "Help"
+              "\x1B"
+              "q"
+              " "
+              "\x1B"
+              "p"
+              "Esc"
+              "\x1B"
+              "q"
+              " "
+              "\x1B"
+              "p"
+              "B"
+              "\x1B"
+              "q"
+              "ooster "
+              "\x1B"
+              "p"
+              "P"
+              "\x1B"
+              "q"
+              "air "
+              "\x1B"
+              "p"
+              "M"
+              "\x1B"
+              "q"
+              "ouse "
+              "\x1B"
+              "p"
+              "H"
+              "\x1B"
+              "q"
+              "ook:%s ",
+              etvMode ? "ETV" : "VBL");
   }
 
   // Park the cursor block in the empty bottom-right cell so it doesn't sit on
@@ -417,8 +494,9 @@ static bool exitToDesktop = false;
 // bit6 here and moved to the IKBD fire bit (bit7) by userfw.s.
 //
 // In mouse mode the right stick drives the cursor, so the joystick uses left
-// stick + D-pad only (pad*) and fire excludes the right-stick click (R3, now the
-// mouse button). Mouse mode off = the union of both sticks + D-pad, as before.
+// stick + D-pad only (pad*) and fire excludes the right-stick click (R3, now
+// the mouse button). Mouse mode off = the union of both sticks + D-pad, as
+// before.
 static void writeBtJoyState(void) {
   controller_state_t btState = {0};
   controller_getState(&btState);
@@ -450,9 +528,9 @@ static void writeBtJoyState(void) {
 
 // Map a centred analog axis (0..1, 0.5 = rest) to a signed per-frame cursor
 // delta: zero inside the deadzone, then a linear+quadratic blend up to
-// SIDEPAD_MOUSE_MAX_SPEED at full deflection. The blend (0.5*t + 0.5*t^2) halves
-// the slope near the deadzone edge -> half the minimum speed for finer slow
-// control, while full deflection still reaches the same max.
+// SIDEPAD_MOUSE_MAX_SPEED at full deflection. The blend (0.5*t + 0.5*t^2)
+// halves the slope near the deadzone edge -> half the minimum speed for finer
+// slow control, while full deflection still reaches the same max.
 static int8_t mouseAxisDelta(float axis) {
   float off = axis - 0.5f;  // -0.5 .. +0.5
   float mag = off < 0.0f ? -off : off;
@@ -501,10 +579,10 @@ static void writeBtMouseState(void) {
   }
 }
 
-// Publish the connection state to the shared region so the m68k boot_gem handler
-// can pick which fixed banner ("Sidepad connected" / "Sidepad not connected") to
-// print from ROM on its way out to the desktop. Must run before CMD_BOOT_GEM so
-// the flag is in place when the m68k reads it.
+// Publish the connection state to the shared region so the m68k boot_gem
+// handler can pick which fixed banner ("Sidepad connected" / "Sidepad not
+// connected") to print from ROM on its way out to the desktop. Must run before
+// CMD_BOOT_GEM so the flag is in place when the m68k reads it.
 static void writeExitMessage(void) {
   controller_state_t st = {0};
   controller_getState(&st);
@@ -529,22 +607,49 @@ static void saveMouseMode(void) {
   settings_save(aconfig_getContext(), true);
 }
 
+// Load the persisted hook-mode flag from per-app config into etvMode.
+static void loadHookMode(void) {
+  SettingsConfigEntry *entry =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_HOOK);
+  etvMode = (entry != NULL) && (strcmp(entry->value, "true") == 0);
+  DPRINTF("Hook mode loaded from config: %s\n", etvMode ? "ETV" : "VBL");
+}
+
+// Persist the current hook-mode flag to per-app config flash.
+static void saveHookMode(void) {
+  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_HOOK, etvMode);
+  settings_save(aconfig_getContext(), true);
+}
+
 // Leave the terminal for the GEM desktop and never return: install the m68k
 // joystick hook, publish the exit banner, hand off to boot_gem, then loop
 // forever republishing the joystick byte the resident VBL hook reads. Invoked
 // once the main loop exits with exitToDesktop set.
 static void exitToGemDesktop(void) {
-  // Persist the mouse-mode choice now, on the way out to the desktop: the main
-  // terminal loop has just exited and the m68k handoff bursts have not started,
-  // so this is the one quiescent point for the flash write (the Atari reads ROM
-  // from RAM, so the bus is unaffected by the brief write).
+  // Persist the mouse-mode and hook-mode choices now, on the way out to the
+  // desktop: the main terminal loop has just exited and the m68k handoff bursts
+  // have not started, so this is the one quiescent point for the flash write
+  // (the Atari reads ROM from RAM, so the bus is unaffected by the brief
+  // write).
   saveMouseMode();
+  saveHookMode();
 
   // The joystick injection hook only matters once a game is running, so install
   // it now, as we leave the terminal for the desktop. Installing it earlier
   // would race the VBL handler's cartridge-bus reads against the terminal's
-  // send_sync protocol and corrupt keystroke delivery. The m68k terminal loop is
-  // still alive here to handle CMD_START.
+  // send_sync protocol and corrupt keystroke delivery. The m68k terminal loop
+  // is still alive here to handle CMD_START. Publish the hook-mode flag first so
+  // it is latched when the installer reads it (the installer runs once, on the
+  // first CMD_START, and picks the VBL $70 or ETV $400 vector from it). Written
+  // inline as a direct shared-var store (same byte layout as SET_SHARED_VAR:
+  // low word at slot+2, high word at slot+0), avoiding a single-use helper.
+  {
+    uintptr_t hookSlot = (uintptr_t)&__rom_in_ram_start__ +
+                         CHANDLER_SHARED_VARIABLES_OFFSET +
+                         (SIDEPAD_HOOK_MODE_SLOT * 4);
+    *((volatile uint16_t *)(hookSlot + 2)) = etvMode ? 1u : 0u;
+    *((volatile uint16_t *)(hookSlot)) = 0u;
+  }
   for (int i = 0; i < SIDEPAD_HOOK_START_TICKS; i++) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
     writeBtJoyState();
@@ -557,11 +662,11 @@ static void exitToGemDesktop(void) {
   // rts'ing out of the print loop, so it persists on screen (the print loop
   // stops repainting the framebuffer over it).
   writeExitMessage();
-  // Let the m68k continue booting to the GEM desktop. Hold CMD_BOOT_GEM for a few
-  // frames rather than a single write: one write can race the m68k's vsync-paced
-  // check_commands poll and be dropped, leaving it stuck redrawing the terminal
-  // (the symptom: the firmware-load message flashes, then the terminal returns).
-  // Repeating it guarantees boot_gem latches.
+  // Let the m68k continue booting to the GEM desktop. Hold CMD_BOOT_GEM for a
+  // few frames rather than a single write: one write can race the m68k's
+  // vsync-paced check_commands poll and be dropped, leaving it stuck redrawing
+  // the terminal (the symptom: the firmware-load message flashes, then the
+  // terminal returns). Repeating it guarantees boot_gem latches.
   for (int i = 0; i < SIDEPAD_BOOT_GEM_TICKS; i++) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
     writeBtJoyState();
@@ -592,6 +697,11 @@ static void showTitle() {
 // keypress (no Enter, unlike the template's line-based command REPL).
 static void handleUiKeystroke(char keystroke) {
   DPRINTF("UI keystroke: '%c' (0x%02X)\n", keystroke, (uint8_t)keystroke);
+  // Any actionable key leaves the help screen and returns to the controller UI.
+  if (helpVisible) {
+    helpVisible = false;
+    refreshControllerUI(true);
+  }
   switch (tolower((unsigned char)keystroke)) {
     case 'p':
       DPRINTF("Pair requested\n");
@@ -605,7 +715,15 @@ static void handleUiKeystroke(char keystroke) {
       DPRINTF("Mouse mode: %s\n", mouseMode ? "on" : "off");
       refreshControllerUI(true);
       break;
-    case 'x':
+    case 'h':
+      // Toggle the VBL/ETV hook mode. Persisted on exit to desktop (like mouse
+      // mode); UI-only for now (the m68k still installs the VBL hook). Force a
+      // full redraw so the footer's Hook:VBL/ETV label updates.
+      etvMode = !etvMode;
+      DPRINTF("Hook mode: %s\n", etvMode ? "ETV" : "VBL");
+      refreshControllerUI(true);
+      break;
+    case 'b':
       // Return to Booster via the clean chip-reset path (loop tail).
       resetDeviceAtBoot = false;
       keepActive = false;
@@ -616,6 +734,21 @@ static void handleUiKeystroke(char keystroke) {
   }
 }
 
+// Toggle the help screen on the dedicated ST Help key. Debounced so the key's
+// auto-repeat does not flicker the screen. Called from the keystroke callback,
+// the same context handleUiKeystroke runs in, so rendering here is safe.
+static void toggleHelp(void) {
+  absolute_time_t now = get_absolute_time();
+  if (helpToggleValid && absolute_time_diff_us(helpLastToggle, now) < 350000) {
+    return;
+  }
+  helpLastToggle = now;
+  helpToggleValid = true;
+  helpVisible = !helpVisible;
+  DPRINTF("Help screen: %s\n", helpVisible ? "on" : "off");
+  refreshControllerUI(true);
+}
+
 // chandler callback: route the m68k's terminal keystrokes straight to the
 // Sidepad single-key handler instead of the line-based command REPL.
 static void sidepadInputCb(TransmissionProtocol *protocol,
@@ -623,10 +756,11 @@ static void sidepadInputCb(TransmissionProtocol *protocol,
   if (protocol == NULL) {
     return;
   }
-  // Any key cancels a running auto-exit countdown, and keeps it cancelled for the
-  // rest of the session. Only mark cancelled when one was actually running, so
-  // keys pressed before the first connect (e.g. [P] to pair) don't suppress the
-  // first countdown. Keys with actions (p/m/x/esc) still perform them below.
+  // Any key cancels a running auto-exit countdown, and keeps it cancelled for
+  // the rest of the session. Only mark cancelled when one was actually running,
+  // so keys pressed before the first connect (e.g. [P] to pair) don't suppress
+  // the first countdown. Keys with actions (p/m/x/esc) still perform them
+  // below.
   if (autoExitActive) {
     autoExitActive = false;
     autoExitCancelled = true;
@@ -643,6 +777,14 @@ static void sidepadInputCb(TransmissionProtocol *protocol,
         return;
       }
       uint32_t payload32 = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
+      // The dedicated ST Help key produces no useful ASCII, so dispatch it by
+      // scan code (carried in bits 16-23 of the payload) before the ASCII path.
+      uint8_t scanCode = (uint8_t)((payload32 & TERM_KEYBOARD_SCAN_MASK) >>
+                                   TERM_KEYBOARD_SCAN_SHIFT);
+      if (scanCode == SCAN_HELP) {
+        toggleHelp();
+        break;
+      }
       handleUiKeystroke((char)(payload32 & TERM_KEYBOARD_KEY_MASK));
       break;
     }
@@ -738,6 +880,14 @@ void emul_start() {
   // Copy the terminal firmware to RAM
   COPY_FIRMWARE_TO_RAM((uint16_t *)target_firmware, target_firmware_length);
 
+  // Clear the command sentinel in the freshly-copied mirror before the bus comes
+  // up. COPY_FIRMWARE only writes the zero-trimmed cartridge (~2.4 KB), and
+  // chandler_init zeroes only the reserved slot, not the sentinel, so $FA2000
+  // would otherwise hold stale SRAM the m68k could read as a spurious command.
+  // Matches md-snap.
+  *((volatile uint32_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CHANDLER_CMD_SENTINEL_OFFSET)) = 0;
+
   // Initialize the cartridge ROM4 read engine. ROM4 reads are served entirely
   // by chained DMAs feeding the PIO TX FIFO — no CPU/IRQ involvement.
   // Without this engine the cartridge image is unreadable from the m68k,
@@ -808,9 +958,10 @@ void emul_start() {
   // initialized
   preinit();
 
-  // Restore the persisted mouse-mode choice so the first UI render and the
-  // injection path reflect it without needing the user to toggle.
+  // Restore the persisted mouse-mode and hook-mode choices so the first UI
+  // render reflects them without needing the user to toggle.
   loadMouseMode();
+  loadHookMode();
 
   // 6. Bring up the BLE controller host.
   // Sidepad does not use WiFi: the CYW43 chip is shared between WiFi and
@@ -867,8 +1018,8 @@ void emul_start() {
     }
     prevConnected = connState.connected;
     // Any controller input also cancels the running countdown (sticky, like a
-    // keypress). Use the deadzoned directions + buttons; exclude the Guide button
-    // (the wake/connect press) so connecting doesn't self-cancel.
+    // keypress). Use the deadzoned directions + buttons; exclude the Guide
+    // button (the wake/connect press) so connecting doesn't self-cancel.
     if (autoExitActive &&
         (connState.anyUp || connState.anyDown || connState.anyLeft ||
          connState.anyRight || connState.anyButton || connState.btnView ||

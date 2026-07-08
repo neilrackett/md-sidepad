@@ -4,20 +4,40 @@ Microfirmware for the [SidecarTridge Multi-device](https://sidecartridge.com) by
 
 ## Introduction
 
-![MD/Sidepad](desc/sidepad.png)
+<img src="./desc/sidepad.png" width="640" height="425" alt="MD/Sidepad settings" />
 
 MD/Sidepad enables your SidecarTridge Multi-device to connect almost any Bluetooth gamepad (Xbox One/Series, DualShock, DualSense, Switch Pro, 8BitDo, and more) to your Atari ST and use it as a joystick and (optionally) mouse.
 
 Once installed, simply pair your controller, press M if you'd like to use the right analogue stick as a mouse, then press ESC and you're ready to play - you can leave your existing joystick and mouse connected, MD/Sidepad works alongside them.
 
-To see MD/Sidepad working, you can use [PP's mouse and joystick tester](https://atari.8bitchip.info/astopensw.php).
+MD/Sidepad uses the ETV hook by default, as it's more likely to work with games, but you can switch to VBL by pressing H. Both VBL and ETV work with GEM and TOS apps.
+
+To see MD/Sidepad working, you can use [PP's mouse and joystick tester](https://atari.8bitchip.info/astopensw.php), download [FreeNukum ST](https://github.com/neilrackett/atarist-freenukum) or try the examples below.
 
 ## Examples
 
-We've included great games to test your Bluetooth controller with, all available in the [examples](examples/) folder:
+<table>
+  <tr>
+    <td><img src="desc/invaders.png" width="200" alt="Sidepad Invaders title screen"></td>
+    <td><img src="desc/invaders-game.png" width="200" alt="Sidepad Invaders gameplay"></td>
+    <td><img src="desc/sideroids.png" width="200" alt="Sideroids title screen"></td>
+  </tr>
+  <tr>
+    <td><img src="desc/breakpad.png" width="200" alt="Breakpad title screen"></td>
+    <td><img src="desc/breakpad-game.png" width="200" alt="Breakpad gameplay"></td>
+    <td><img src="desc/landingpad.png" width="200" alt="Landing Pad title screen"></td>
+  </tr>
+  <tr>
+    <td><img src="desc/sidepong.png" width="200" alt="Sidepong title screen"></td>
+    <td><img src="desc/launchpad.png" width="200" alt="Launchpad title screen"></td>
+    <td><img src="desc/sidewinder.png" width="200" alt="Sidewinder title screen"></td>
+  </tr>
+</table>
 
-| Name             | Description                                              | Filename                             | Mouse | Joystick |
-| ---------------- | -------------------------------------------------------- | ------------------------------------ | :---: | :------: |
+We've recreated some great classic games to test your Bluetooth controller with, or just play with your regular mouse and joystick if you prefer, all available in the [examples](examples/) folder:
+
+| Name             | Description                                              | Filename                              | Mouse | Joystick |
+| ---------------- | -------------------------------------------------------- | ------------------------------------- | :---: | :------: |
 | Sidepad Invaders | Blast the descending alien hordes, Space Invaders style  | [INVADERS.TOS](examples/invaders.c)   |       |    ✓     |
 | Sideroids        | Spin, thrust and shoot the asteroids before they get you | [SIDEROID.TOS](examples/sideroids.c)  |       |    ✓     |
 | Breakpad         | Colourful Breakout-style brick basher                    | [BREAKPAD.TOS](examples/breakpad.c)   |   ✓   |    ✓     |
@@ -35,9 +55,8 @@ We've included great games to test your Bluetooth controller with, all available
 
 ## Known limitations
 
-MD/Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
-
-Development has focussed on Xbox One/Series gamepads, so if you have a different controller, please let us know how you get on.
+- MD/Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
+- Development has focussed on Xbox One/Series gamepads, so if you have a different controller, please let us know how you get on.
 
 ## What's next?
 

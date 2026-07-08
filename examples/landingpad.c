@@ -1,4 +1,9 @@
 /*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * landingpad.c — LANDING PAD, a simple Lunar-Lander-style game for the
  * Atari ST (low resolution).
  *

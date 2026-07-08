@@ -1,3 +1,8 @@
+/*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 #include "include/aconfig.h"
 
 // We don't have any variables because this is the placeholder app
@@ -5,6 +10,7 @@ static SettingsConfigEntry defaultEntries[] = {
     {ACONFIG_PARAM_FOLDER, SETTINGS_TYPE_STRING, "/test"},
     {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},   // 255: Menu mode
     {ACONFIG_PARAM_MOUSE, SETTINGS_TYPE_BOOL, "false"},  // mouse mode off
+    {ACONFIG_PARAM_HOOK, SETTINGS_TYPE_BOOL, "true"},    // hook mode: ETV (default)
 };
 
 // Create a global context for our settings
@@ -87,7 +93,11 @@ int aconfig_init(const char *currentAppId) {
   uint32_t flashAddress = 0;  // Will remain 0 if we don't find a match
 
   while ((size_t)(ptr - lookupStart) + ACONFIG_LOOKUP_ENTRY_SIZE <= lookupLen) {
-    DPRINTF("Lookup entry at %X is %s\n", ptr, (const char *)ptr);
+    // NOTE: do NOT DPRINTF every lookup entry here. This runs in main() before
+    // emul_start()/init_romemul(), so on a debug build the blocking per-entry
+    // UART flood (one line per installed app) delays cartridge serving past
+    // TOS's $FA0000 scan window -> the ST boots with no terminal. Keep this
+    // pre-serve path lean; the matched entry is logged once below.
 
     // If the first byte is 0, we consider there are no more valid entries
     if (ptr[0] == 0) {
@@ -140,7 +150,10 @@ int aconfig_init(const char *currentAppId) {
 
   DPRINTF("Settings app loaded.\n");
 
-  settings_print(&gSettingsCtx, NULL);
+  // Same rationale as gconfig_init: this runs before init_romemul(), so don't
+  // block on a full per-entry UART dump here (delays serving -> no terminal on
+  // debug builds). The app config is still viewable from the terminal.
+  // settings_print(&gSettingsCtx, NULL);
 
   return ACONFIG_SUCCESS;
 }

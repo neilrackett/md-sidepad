@@ -1,4 +1,9 @@
 /*
+ * Copyright (C) 2026 Neil Rackett
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
  * launchpad.c — LAUNCHPAD, a Missile-Command-style game for the Atari ST
  * (low resolution).
  *

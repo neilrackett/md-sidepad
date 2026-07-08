@@ -243,7 +243,13 @@ if(NOT RELEASE_DATE)
         set(RELEASE_DATE ${CURRENT_DATE_TIME})
 endif()
 
-if (NOT _DEBUG)
+# Default to debug ONLY when DEBUG_MODE is unset/empty. The previous
+# `if (NOT _DEBUG)` also matched the string "0" (CMake treats "0" as false),
+# so `release` (DEBUG_MODE=0) was silently forced back to _DEBUG=1 — every
+# build shipped full UART logging, and the blocking per-boot log flood (e.g.
+# the aconfig lookup dump) delays init_romemul past TOS's cartridge-scan
+# window on configs with many installed apps -> ST boots with no terminal.
+if (NOT DEFINED _DEBUG OR "${_DEBUG}" STREQUAL "")
         set(_DEBUG 1)
 endif()
 
