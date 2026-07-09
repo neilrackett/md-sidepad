@@ -161,11 +161,11 @@ static bool mouseMode = false;
 
 // VBL/ETV hook-mode toggle ([H] in the controller UI). false = VBL ($70), true
 // = ETV ($400). Defaults to ETV (ACONFIG_PARAM_HOOK default is "true"); this
-// initial value is overwritten by loadHookMode() from per-app config at startup.
-// Published to shared-var slot 6 (inline in exitToGemDesktop) on the way out to
-// the desktop so the m68k userfw installer hooks the matching vector. ETV
-// survives programs that replace the VBL vector; the m68k rate-limits it to
-// ~50 Hz to match the VBL route.
+// initial value is overwritten by loadHookMode() from per-app config at
+// startup. Published to shared-var slot 6 (inline in exitToGemDesktop) on the
+// way out to the desktop so the m68k userfw installer hooks the matching
+// vector. ETV survives programs that replace the VBL vector; the m68k
+// rate-limits it to ~50 Hz to match the VBL route.
 static bool etvMode = true;
 
 // Help-screen toggle (dedicated ST Help key, scan code SCAN_HELP). When true
@@ -353,13 +353,39 @@ static void renderControllerScreen(const controller_state_t *state,
   // Help page: when the Help key is toggled on, replace the controller content
   // area (everything between the title row and the bottom rule) with the static
   // help text. Drawn last so it overwrites the status/visualiser written above;
-  // the shared title and footer rows are untouched. For now the page is just
-  // the word HELP.
+  // the shared title and footer rows are untouched. Content area is rows
+  // 1..UI_ROW_COUNT-3 (20 rows), 40 columns; keep every line within both.
   if (helpVisible) {
+    static const char *const helpLines[] = {
+        "",
+        "Use your Bluetooth gamepad as an Atari",
+        "ST joystick and (optionally) mouse.",
+        "",
+        "P    Pair a new controller",
+        "M    Right stick as mouse on/off",
+        "H    Toggle joystick hook (see below)",
+        "ESC  Exit to desktop and play!",
+        "B    Return to Booster",
+        "",
+        "Choose between 2 joystick hooks:",
+        "",
+        "ETV  Works with most apps and games",
+        "VBL  Great for GEM and TOS apps",
+        "",
+        "Find out more:",
+        "",
+        "Web  github.com/neilrackett/md-sidepad",
+        "X    x.com/neilrackett",
+    };
     for (uint8_t row = 1; row <= UI_ROW_COUNT - 3; row++) {
       memset(currentLines[row], ' ', TERM_SCREEN_SIZE_X);
     }
-    memcpy(currentLines[2], "HELP", 4);
+    for (size_t i = 0; i < sizeof(helpLines) / sizeof(helpLines[0]); i++) {
+      if (1 + i > (size_t)(UI_ROW_COUNT - 3)) break;  // don't stomp the footer
+      size_t len = strlen(helpLines[i]);
+      if (len > TERM_SCREEN_SIZE_X) len = TERM_SCREEN_SIZE_X;
+      memcpy(currentLines[1 + i], helpLines[i], len);
+    }
   }
 
   // Bottom two rows: a horizontal rule then the controls. Each
@@ -638,11 +664,12 @@ static void exitToGemDesktop(void) {
   // it now, as we leave the terminal for the desktop. Installing it earlier
   // would race the VBL handler's cartridge-bus reads against the terminal's
   // send_sync protocol and corrupt keystroke delivery. The m68k terminal loop
-  // is still alive here to handle CMD_START. Publish the hook-mode flag first so
-  // it is latched when the installer reads it (the installer runs once, on the
-  // first CMD_START, and picks the VBL $70 or ETV $400 vector from it). Written
-  // inline as a direct shared-var store (same byte layout as SET_SHARED_VAR:
-  // low word at slot+2, high word at slot+0), avoiding a single-use helper.
+  // is still alive here to handle CMD_START. Publish the hook-mode flag first
+  // so it is latched when the installer reads it (the installer runs once, on
+  // the first CMD_START, and picks the VBL $70 or ETV $400 vector from it).
+  // Written inline as a direct shared-var store (same byte layout as
+  // SET_SHARED_VAR: low word at slot+2, high word at slot+0), avoiding a
+  // single-use helper.
   {
     uintptr_t hookSlot = (uintptr_t)&__rom_in_ram_start__ +
                          CHANDLER_SHARED_VARIABLES_OFFSET +
@@ -880,11 +907,11 @@ void emul_start() {
   // Copy the terminal firmware to RAM
   COPY_FIRMWARE_TO_RAM((uint16_t *)target_firmware, target_firmware_length);
 
-  // Clear the command sentinel in the freshly-copied mirror before the bus comes
-  // up. COPY_FIRMWARE only writes the zero-trimmed cartridge (~2.4 KB), and
-  // chandler_init zeroes only the reserved slot, not the sentinel, so $FA2000
-  // would otherwise hold stale SRAM the m68k could read as a spurious command.
-  // Matches md-snap.
+  // Clear the command sentinel in the freshly-copied mirror before the bus
+  // comes up. COPY_FIRMWARE only writes the zero-trimmed cartridge (~2.4 KB),
+  // and chandler_init zeroes only the reserved slot, not the sentinel, so
+  // $FA2000 would otherwise hold stale SRAM the m68k could read as a spurious
+  // command. Matches md-snap.
   *((volatile uint32_t *)((uintptr_t)&__rom_in_ram_start__ +
                           CHANDLER_CMD_SENTINEL_OFFSET)) = 0;
 
