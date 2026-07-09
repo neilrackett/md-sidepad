@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - '__DISABLED__v*'
+  #push:
+  #  tags:
+  #    - 'v*'
   workflow_dispatch:
 
 permissions:
