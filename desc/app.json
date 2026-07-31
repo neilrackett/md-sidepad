@@ -1,8 +1,8 @@
 {
   "uuid": "<APP_UUID>",
   "name": "MD/Sidepad",
-  "description": "MD/Sidepad enables you to connect any Bluetooth gamepad to your Atari ST and use it as a joystick and mouse. For more information and demo games, visit <a href=\"https://github.com/neilrackett/md-sidepad\">https://github.com/neilrackett/md-sidepad</a>.",
-  "image": "https://atarist.neilrackett.com/<APP_UUID>.png",
+  "description": "MD/Sidepad enables you to connect any Bluetooth gamepad to your Atari ST and use it as a joystick and mouse.  For more information and games, visit <a href=\"https://neilrackett.com/atarist\">neilrackett.com</a>.",
+  "image": "https://downloads.neilrackett.com/md-sidepad/image.webp",
   "tags": [
     "Bluetooth",
     "Controller",
@@ -15,7 +15,7 @@
     "Atari MegaST",
     "Atari MegaSTE"
   ],
-  "binary": "https://atarist.neilrackett.com/<APP_UUID>-<APP_VERSION>.uf2",
+  "binary": "https://downloads.neilrackett.com/md-sidepad/<APP_UUID>.uf2",
   "md5": "<BINARY_MD5_HASH>",
   "version": "<APP_VERSION>"
 }
