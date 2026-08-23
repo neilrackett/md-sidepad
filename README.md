@@ -53,9 +53,26 @@ We've recreated some great classic games to test your Bluetooth controller with,
 3. On the Booster screen, press ESC for the app list and select the MD/Sidepad app.
 4. To return to Booster, power on and press X when the menu appears.
 
+## Xpad
+
+MD/Sidepad publishes your controller as an
+[Xpad](https://github.com/neilrackett/atarist-xpad) block: a shared
+state block, found through the cookie jar, carrying every button, stick
+and trigger rather than the four directions and one fire button a
+joystick can express. Software written for Xpad therefore gets the whole
+pad, analogue sticks and all.
+
+It runs alongside everything above rather than replacing it, and is
+unaffected by the mouse and hook settings: those change what gets
+injected, never what Xpad reports. Nothing needs enabling.
+
+Xpad is a specification rather than a feature of this product, so
+anything can publish a block and anything can read one. MD/Sidepad is
+one provider among others.
+
 ## Known limitations
 
-- MD/Sidepad currently talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, probably won't see your controller yet.
+- MD/Sidepad talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, won't see your controller as a joystick. Software that reads Xpad is unaffected: there is no hook involved, so there is nothing to bypass.
 - Development has focussed on Xbox One/Series gamepads, so if you have a different controller, please let us know how you get on.
 
 ## What's next?

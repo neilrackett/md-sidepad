@@ -37,6 +37,7 @@
 #include "sdcard.h"
 #include "select.h"
 #include "target_firmware.h"  // Include the target firmware binary
+#include "include/xpadstate.h"
 #include "term.h"
 
 #define SLEEP_LOOP_MS 50
@@ -677,10 +678,17 @@ static void exitToGemDesktop(void) {
     *((volatile uint16_t *)(hookSlot + 2)) = etvMode ? 1u : 0u;
     *((volatile uint16_t *)(hookSlot)) = 0u;
   }
+  // Lay down the Xpad block before the m68k installer runs, because the same
+  // CMD_START burst that installs the hook also installs the cookie pointing
+  // at it. A consumer that looked before this ran would find a valid cookie
+  // aimed at zeroes.
+  xpadstate_init();
+  xpadstate_publish();
   for (int i = 0; i < SIDEPAD_HOOK_START_TICKS; i++) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
     writeBtJoyState();
     writeBtMouseState();  // valid before the hook (step 3) reads slot 5
+    xpadstate_publish();
     controller_poll();
     sleep_ms(SLEEP_LOOP_MS);
   }
@@ -698,6 +706,7 @@ static void exitToGemDesktop(void) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_CONTINUE);
     writeBtJoyState();
     writeBtMouseState();
+    xpadstate_publish();
     controller_poll();
     sleep_ms(SLEEP_LOOP_MS);
   }
@@ -708,6 +717,7 @@ static void exitToGemDesktop(void) {
     controller_poll();
     writeBtJoyState();
     writeBtMouseState();
+    xpadstate_publish();
     sleep_ms(SIDEPAD_JOY_POLL_MS);
   }
 }

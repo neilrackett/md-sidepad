@@ -65,6 +65,14 @@ BT_MOUSE_BTN        equ $FA2025     ; IKBD button bits (bit1 = left button / R3)
 BT_MOUSE_DX         equ $FA2026     ; signed per-frame dx
 BT_MOUSE_DY         equ $FA2027     ; signed per-frame dy
 
+; Xpad block, published by the RP into APP_FREE. Consumers find it through
+; the cookie jar and read it straight out of the window: no copy, no hook,
+; and nothing for a game to clobber. Must match XPADSTATE_ST_BLOCK in
+; rp/src/include/xpadstate.h.
+COOKIE_JAR          equ $5A0        ; .l  system cookie jar pointer
+XPAD_COOKIE         equ $58504144   ; 'XPAD'
+XPAD_BLOCK          equ $FA2300     ; the block itself, in the cartridge window
+
 ; -----------------------------------------------------------------------
 ; Installer — runs from ROM at USERFW ($FA0800). Only writes to RAM.
 ; -----------------------------------------------------------------------
@@ -72,6 +80,11 @@ BT_MOUSE_DY         equ $FA2027     ; signed per-frame dy
 ; d0-d2/a0-a2, but preserve d3-d7/a3-a6, so a3 survives the traps below.
 userfw:
     movem.l d0-d2/a0-a3, -(sp)
+
+    ; Publish the Xpad cookie first. It is independent of everything below:
+    ; the block lives in the cartridge window, not in the RAM block, so it
+    ; should go in even if the Malloc fails and no hook gets installed.
+    bsr     install_xpad_cookie
 
     ; Malloc a RAM block for the resident handler + its state.
     move.l  #(resident_end-resident_start), -(sp)
@@ -143,6 +156,50 @@ userfw:
 
 .uf_exit:
     movem.l (sp)+, d0-d2/a0-a3
+    rts
+
+; -----------------------------------------------------------------------
+; Point the XPAD cookie at the block in the window, so any Xpad-aware
+; program can find the controller without going near joyvec.
+;
+; The jar is pairs of (id, value) ending in a (0, slots_remaining)
+; terminator. Replace an existing entry, otherwise append if there is room.
+; Runs from the installer, which is supervisor at boot, so the system
+; variable at $5A0 is legal to touch here.
+;
+; Silently does nothing when there is no jar at all, which is TOS 1.0 and
+; nothing else. Clobbers d0/a0, both saved by the caller.
+; -----------------------------------------------------------------------
+install_xpad_cookie:
+    move.l  COOKIE_JAR.w, d0
+    beq.s   .xc_done                ; no jar: nothing we can do from here
+    move.l  d0, a0
+
+.xc_scan:
+    move.l  (a0), d0
+    beq.s   .xc_append              ; terminator reached
+    cmp.l   #XPAD_COOKIE, d0
+    beq.s   .xc_replace
+    addq.l  #8, a0                  ; next (id, value) pair
+    bra.s   .xc_scan
+
+.xc_replace:
+    move.l  #XPAD_BLOCK, 4(a0)
+    rts
+
+.xc_append:
+    move.l  4(a0), d0               ; the terminator carries the free count
+    cmp.l   #2, d0
+    blt.s   .xc_done                ; jar full: the caller must enlarge it
+    ; Lay the new terminator down before overwriting this pair, so a
+    ; consumer scanning concurrently never runs off the end of the jar.
+    clr.l   8(a0)
+    subq.l  #1, d0
+    move.l  d0, 12(a0)
+    move.l  #XPAD_COOKIE, (a0)
+    move.l  #XPAD_BLOCK, 4(a0)
+
+.xc_done:
     rts
 
 ; -----------------------------------------------------------------------
