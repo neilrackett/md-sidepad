@@ -99,6 +99,9 @@ add_subdirectory(httpc)
 set(BLUEPAD32_ROOT ${REPO_ROOT}/bluepad32)
 set(BTSTACK_ROOT ${PICO_SDK_PATH}/lib/btstack)
 include_directories(${CMAKE_CURRENT_LIST_DIR})      # lwipopts.h (pulled in via cyw43_arch_lwip_poll)
+# xpad.h, from the submodule at the repository root rather than a copy:
+# xpadstate.c writes that ABI and must not drift from it.
+include_directories(${CMAKE_CURRENT_LIST_DIR}/../../xpad/src)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/bt)  # btstack_config.h + sdkconfig.h
 include_directories(${BTSTACK_ROOT}/3rd-party/bluedroid/encoder/include)
 include_directories(${BTSTACK_ROOT}/3rd-party/bluedroid/decoder/include)

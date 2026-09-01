@@ -70,6 +70,17 @@ Xpad is a specification rather than a feature of this product, so
 anything can publish a block and anything can read one. MD/Sidepad is
 one provider among others.
 
+The specification lives in the `xpad` submodule rather than as a copy
+in this tree, so the layout this writes cannot drift from what
+consumers are compiled against. Clone with `--recursive`, and update it
+deliberately:
+
+    git submodule update --remote xpad
+
+Only one provider may own the cookie at a time, so MD/Sidepad and
+another provider such as COMpad are alternatives rather than something
+to run together.
+
 ## Known limitations
 
 - MD/Sidepad talks to your Atari ST through the system `joyvec`, so games and demos that read the IKBD ACIA interrupt directly, rather than going through `joyvec`, won't see your controller as a joystick. Software that reads Xpad is unaffected: there is no hook involved, so there is nothing to bypass.

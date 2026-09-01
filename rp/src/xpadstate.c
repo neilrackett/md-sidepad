@@ -7,9 +7,11 @@
  * File: xpadstate.c
  * Description: Publish the connected controller as an Xpad block.
  *
- * See xpadstate.h for what this is for. include/xpad.h is vendored from
- * atarist-xpad unmodified, under BSD-2-Clause, and is the ABI this
- * writes: constants come from there so the two cannot drift.
+ * See xpadstate.h for what this is for. xpad.h is the ABI this writes,
+ * and it comes from the xpad submodule at the repository root rather
+ * than a copy in this tree, so the layout and the constants cannot
+ * drift from what consumers are compiled against. Update it with
+ * `git submodule update --remote xpad` and read the diff.
  */
 
 #include "include/xpadstate.h"
@@ -21,7 +23,7 @@
 #include "constants.h"
 #include "debug.h"
 #include "include/controller.h"
-#include "include/xpad.h"
+#include "xpad.h"
 
 /* ------------------------------------------------------------------ */
 /* Byte order                                                          */

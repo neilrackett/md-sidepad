@@ -20,7 +20,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "include/xpad.h"
+#include "xpad.h"
 #include "include/xpadstate.h"
 #include "include/controller.h"
 

@@ -110,6 +110,29 @@ Core 0 owns flash writes (`PICO_FLASH_ASSUME_CORE0_SAFE=1`) and overclocks to 22
 ### App identity
 `CURRENT_APP_UUID_KEY` (from `APP_UUID_KEY` at CMake time) must match `uuid` in `desc/app.json` and keys into `GLOBAL_LOOKUP_FLASH` to find this app's config sector. Mismatch → jump to Booster.
 
+## Xpad
+
+`xpad` is a **submodule** at the repository root, not a vendored copy:
+`rp/src/xpadstate.c` writes that ABI and must not drift from what
+consumers are compiled against. Do not edit anything under `xpad/`;
+change it upstream in atarist-xpad and bump.
+
+    git submodule update --remote xpad
+
+Two things it is worth knowing before changing anything here.
+
+`xpadstate.c` carries `_Static_assert`s tying its own offsets to the
+header, so a bump that moves a field fails the build rather than
+producing a block nobody agrees with. Keep them.
+
+`target/atarist/src/userfw.s` hand-writes `XPAD_COOKIE` rather than
+including xpad's generated `xpad.inc`. That is deliberate: `stcmd`
+mounts one directory, so a submodule at the repository root is not
+visible to the cross assembler when the ST build's working folder is
+`target/atarist`. It is one constant and it is checked against the
+generated file by eye; if more are ever needed, copy `xpad.inc` into
+the mounted directory as a build step rather than reaching outside it.
+
 ## MD/Sidepad specifics
 
 The pieces below are hard-won and non-obvious — read before touching the command path, joystick injection, or the booster/desktop exits.

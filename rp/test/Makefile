@@ -2,7 +2,10 @@
 # Host test for the Xpad block writer. Needs nothing but a C compiler:
 # stub/ stands in for the Pico SDK headers xpadstate.c pulls in.
 CC      = cc
-CFLAGS  = -Wall -Wextra -Werror -std=c11 -I stub -I ../src -I ../src/include
+# xpad.h comes from the submodule at the repository root, not a copy in
+# this tree, so a bump cannot leave the two disagreeing about the layout.
+XPAD    = ../../xpad/src
+CFLAGS  = -Wall -Wextra -Werror -std=c11 -I stub -I ../src -I ../src/include -I $(XPAD)
 BUILD   = build
 
 .PHONY: test clean
