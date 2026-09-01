@@ -38,7 +38,12 @@ BIN = BOOT.BIN
 # _DEBUG: 1 to enable debug, 0 to disable them
 # To disable debug, make target DEBUG_MODE=0
 DEBUG_MODE = 1
-VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac -D_DEBUG=$(DEBUG_MODE) -DGEMDOS_DATE=$(GEMDOS_DATE_FORMATTED) -DGEMDOS_TIME=$(GEMDOS_TIME_FORMATTED) -DVERSION_MAJOR=\"$(VERSION_MAJOR)\" -DVERSION_MINOR=\"$(VERSION_MINOR)\" -DVERSION_PATCH=\"$(VERSION_PATCH)\"
+# The xpad submodule lives at the repository root, which is what the
+# container mounts (see build.sh): -I here means userfw.s can include
+# the generated equates by name instead of transcribing them.
+XPAD_INC = ../../xpad/src
+
+VASMFLAGS=-Faout -quiet -x -m68000 -spaces -showopt -devpac -I$(XPAD_INC) -D_DEBUG=$(DEBUG_MODE) -DGEMDOS_DATE=$(GEMDOS_DATE_FORMATTED) -DGEMDOS_TIME=$(GEMDOS_TIME_FORMATTED) -DVERSION_MAJOR=\"$(VERSION_MAJOR)\" -DVERSION_MINOR=\"$(VERSION_MINOR)\" -DVERSION_PATCH=\"$(VERSION_PATCH)\"
 VASM = vasm
 VLINK =  vlink
 LINKER_SCRIPT = $(SOURCES_DIR)/userfw.ld

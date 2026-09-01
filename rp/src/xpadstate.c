@@ -78,7 +78,7 @@ static void put8(uint32_t off, uint8_t v)
  * two pointer fields are 2-aligned there and 4-aligned here, so
  * everything from provider onwards sits at a different offset. The
  * fixed header before them is identical on both, so those offsets are
- * asserted against the vendored header below and cannot drift.
+ * asserted against the submodule's header below and cannot drift.
  */
 #define OFF_MAGIC 0
 #define OFF_VERSION 4

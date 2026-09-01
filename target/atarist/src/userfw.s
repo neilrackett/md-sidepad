@@ -70,7 +70,11 @@ BT_MOUSE_DY         equ $FA2027     ; signed per-frame dy
 ; and nothing for a game to clobber. Must match XPADSTATE_ST_BLOCK in
 ; rp/src/include/xpadstate.h.
 COOKIE_JAR          equ $5A0        ; .l  system cookie jar pointer
-XPAD_COOKIE         equ $58504144   ; 'XPAD'
+; XPAD_COOKIE and the rest of the ABI come from the xpad submodule,
+; generated from xpad.h by `make inc` there, so they cannot be
+; transcribed wrongly here. See the -I in the Makefile.
+    include "xpad.inc"
+
 XPAD_BLOCK          equ $FA2300     ; the block itself, in the cartridge window
 
 ; -----------------------------------------------------------------------

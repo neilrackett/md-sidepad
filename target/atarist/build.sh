@@ -12,6 +12,16 @@ if [ -z "$2" ]; then
 fi
 
 working_folder=$1
+
+# The container mounts one directory and nothing else, so what gets
+# mounted decides what the cross tools can see. Mount the repository
+# root rather than this folder, and run make in the subdirectory: that
+# is what lets userfw.s include the xpad submodule's generated equates
+# instead of transcribing them. Host-side paths still use
+# $working_folder; anything handed to stcmd is relative to the mount and
+# so carries the $st_rel prefix.
+mount_root=$(cd "$working_folder/../.." && pwd)
+st_rel=${working_folder#"$mount_root"/}
 build_type=$2
 target_firmware="target_firmware.h"
 
@@ -20,7 +30,22 @@ target_firmware="target_firmware.h"
 # (CI, sub-shells, build wrappers). Without it stcmd's `-it` flag aborts
 # with "the input device is not a TTY" and the build silently keeps
 # whatever BOOT.BIN was previously generated.
-STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd make $build_type
+# Say what is wrong before the assembler does. Without the submodule
+# this fails as `could not open <xpad.inc>`, which is true but does not
+# tell you that a clone missed --recursive. Suggested by MD/Lynx, which
+# reaches the same file a different way and kept an explicit check.
+if [ ! -f "$mount_root/xpad/src/xpad.inc" ]; then
+    echo "ERROR: the xpad submodule is missing or empty."
+    echo "       $mount_root/xpad/src/xpad.inc does not exist."
+    echo
+    echo "       git submodule update --init --recursive"
+    echo
+    echo "userfw.s takes the Xpad ABI from there rather than copying it,"
+    echo "so the m68k build cannot proceed without it."
+    exit 7
+fi
+
+STCMD_NO_TTY=1 ST_WORKING_FOLDER=$mount_root stcmd make -C "$st_rel" $build_type
 make_status=$?
 if [ "$make_status" -ne 0 ]; then
     echo "ERROR: m68k make failed (status $make_status)"
@@ -59,7 +84,7 @@ echo "Cartridge code: $boot_size / $cartridge_max bytes"
 filename="./dist/FIRMWARE.IMG"
 
 # Copy the BOOT.BIN file to a ROM size file for testing
-STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd cp ./dist/BOOT.BIN $filename
+STCMD_NO_TTY=1 ST_WORKING_FOLDER=$mount_root stcmd cp "$st_rel/dist/BOOT.BIN" "$st_rel/${filename#./}"
 
 # Determine the file size accordingly
 if [ "$(uname)" = "Darwin" ]; then
@@ -78,7 +103,7 @@ if [ "$filesize" -gt "$targetsize" ]; then
 fi
 
 # Resize the file to 64Kbytes
-STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd truncate -s $targetsize $filename
+STCMD_NO_TTY=1 ST_WORKING_FOLDER=$mount_root stcmd truncate -s $targetsize "$st_rel/${filename#./}"
 
 if [ $? -ne 0 ]; then
     echo "Failed to resize the file."
