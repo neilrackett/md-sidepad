@@ -344,6 +344,7 @@ start_rom_code:
 GEMDOS_Cconws		equ 9						; trap #1 -> print null-terminated string
 EXIT_FLAG_ADDR		equ (SHARED_VARIABLES + (4 * 4) + 3)	; connected flag, LSB of slot 4 ($FA2023)
 MOUSE_ENABLED_ADDR	equ (SHARED_VARIABLES + (5 * 4))		; mouse-mode flag, byte 0 of slot 5 ($FA2024)
+JOY_ENABLED_ADDR	equ (SHARED_VARIABLES + (7 * 4) + 3)	; joystick flag, LSB of slot 7 ($FA202F)
 
 boot_gem:
 	; (Re)install the VBL injection hook before booting to the desktop. boot_gem
@@ -368,23 +369,52 @@ boot_gem:
 	; (slot 4) and the mouse-mode flag (slot 5) to pick between them.
 	tst.b	EXIT_FLAG_ADDR				; connected?
 	beq.s	.bg_noconn
-	lea	bg_msg_joy(pc), a0			; connected: joystick...
-	tst.b	MOUSE_ENABLED_ADDR			; ...or joystick + mouse?
-	beq.s	.bg_print
-	lea	bg_msg_joymouse(pc), a0
+
+	; Connected: a fixed header, then the device list on the row below.
+	; Xpad is always first because it is always published: the joystick
+	; and mouse flags only say whether we are additionally pretending to
+	; be those devices. Four combinations, one string each, since picking
+	; between whole strings needs no runtime assembly of text.
+	lea	bg_msg_head(pc), a0
+	bsr.s	.bg_write
+	tst.b	JOY_ENABLED_ADDR
+	beq.s	.bg_nojoy
+	tst.b	MOUSE_ENABLED_ADDR
+	beq.s	.bg_joyonly
+	lea	bg_list_joymouse(pc), a0		; Xpad, joystick, mouse
+	bra.s	.bg_print
+.bg_joyonly:
+	lea	bg_list_joy(pc), a0			; Xpad, joystick
+	bra.s	.bg_print
+.bg_nojoy:
+	tst.b	MOUSE_ENABLED_ADDR
+	beq.s	.bg_xpadonly
+	lea	bg_list_mouse(pc), a0			; Xpad, mouse
+	bra.s	.bg_print
+.bg_xpadonly:
+	lea	bg_list_xpad(pc), a0			; Xpad
 	bra.s	.bg_print
 .bg_noconn:
 	lea	bg_msg_noconn(pc), a0			; ESC E + "Sidepad not connected" + blank line
 .bg_print:
+	bsr.s	.bg_write
+	rts
+.bg_write:
 	move.l	a0, -(sp)
 	move.w	#GEMDOS_Cconws, -(sp)
 	trap	#1
 	addq.l	#6, sp
 	rts
-bg_msg_joy:
-	dc.b	27,"E","MD/Sidepad connected: joystick",13,10,13,10,0
-bg_msg_joymouse:
-	dc.b	27,"E","MD/Sidepad connected: joystick, mouse",13,10,13,10,0
+bg_msg_head:
+	dc.b	27,"E","MD/Sidepad connected:",13,10,0
+bg_list_xpad:
+	dc.b	"Xpad",13,10,13,10,0
+bg_list_joy:
+	dc.b	"Xpad, joystick",13,10,13,10,0
+bg_list_mouse:
+	dc.b	"Xpad, mouse",13,10,13,10,0
+bg_list_joymouse:
+	dc.b	"Xpad, joystick, mouse",13,10,13,10,0
 bg_msg_noconn:
 	dc.b	27,"E","MD/Sidepad not connected",13,10,13,10,0
 	even

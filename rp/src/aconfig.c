@@ -10,6 +10,7 @@ static SettingsConfigEntry defaultEntries[] = {
     {ACONFIG_PARAM_FOLDER, SETTINGS_TYPE_STRING, "/test"},
     {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},   // 255: Menu mode
     {ACONFIG_PARAM_MOUSE, SETTINGS_TYPE_BOOL, "false"},  // mouse mode off
+    {ACONFIG_PARAM_JOYSTICK, SETTINGS_TYPE_BOOL, "true"},  // joystick on
     {ACONFIG_PARAM_HOOK, SETTINGS_TYPE_BOOL, "true"},    // hook mode: ETV (default)
 };
 

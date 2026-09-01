@@ -29,6 +29,7 @@
 #include "display.h"
 #include "ff.h"
 #include "gconfig.h"
+#include "include/xpadstate.h"
 #include "memfunc.h"
 #include "network.h"
 #include "pico/stdlib.h"
@@ -37,7 +38,6 @@
 #include "sdcard.h"
 #include "select.h"
 #include "target_firmware.h"  // Include the target firmware binary
-#include "include/xpadstate.h"
 #include "term.h"
 
 #define SLEEP_LOOP_MS 50
@@ -66,6 +66,11 @@
 // ($70), 1 = ETV ($400). Published before the CMD_START burst in
 // exitToGemDesktop so it is latched when the installer runs.
 #define SIDEPAD_HOOK_MODE_SLOT 6
+
+// Shared-variable slot carrying the joystick-enabled flag to the m68k, so the
+// exit banner can list what is actually on (LSB at m68k $FA202F). Mirrors the
+// mouse flag in slot 5; Xpad is always published and so needs no flag.
+#define SIDEPAD_JOY_ENABLED_SLOT 7
 
 // Right-stick-as-mouse tuning (analog, proportional). Deadzone around centre
 // (0.5) below which the stick is idle, and the max per-frame cursor delta at
@@ -159,6 +164,11 @@ static void appendLineAt(char *buffer, size_t bufferSize, size_t *offset,
 // config (ACONFIG_PARAM_MOUSE): loaded at startup and saved on each toggle, so
 // the choice survives reboots.
 static bool mouseMode = false;
+
+// Joystick injection on/off, toggled with J and persisted like mouse mode.
+// Off still leaves Xpad published: a game reading the block is unaffected by
+// whether we are also pretending to be a joystick.
+static bool joystickMode = true;
 
 // VBL/ETV hook-mode toggle ([H] in the controller UI). false = VBL ($70), true
 // = ETV ($400). Defaults to ETV (ACONFIG_PARAM_HOOK default is "true"); this
@@ -333,22 +343,36 @@ static void renderControllerScreen(const controller_state_t *state,
   // and a cloned right pair shows the mouse (right stick + R3), each titled
   // below. Step 1 is visual only: the actual joystick injection still uses any*
   // either way, so the pad reacts identically with mouse mode on or off.
-  if (mouseMode) {
+  // Both pairs are always on screen, so the layout does not move when a mode
+  // is toggled and you can see at a glance what each half is doing. A disabled
+  // half simply shows nothing lit. Titles are emitted after the grid diff
+  // (see below) because their toggle letters are in reverse video, which the
+  // plain-char grid cannot carry.
+  {
     bool joyFire = state->btnA || state->btnB || state->btnX || state->btnY ||
                    state->btnLB || state->btnRB || state->btnLS ||
                    state->lt > CONTROLLER_TRIGGER_THRESHOLD ||
                    state->rt > CONTROLLER_TRIGGER_THRESHOLD;
-    drawJoyPair(currentLines, DIR_BOX_COL, FIRE_BOX_COL, state->padUp,
-                state->padDown, state->padLeft, state->padRight, joyFire);
-    drawJoyPair(currentLines, MOUSE_DIR_BOX_COL, MOUSE_FIRE_BOX_COL,
-                state->rstickUp, state->rstickDown, state->rstickLeft,
-                state->rstickRight, state->btnRS);
-    drawTitle(currentLines, VIS_TITLE_ROW, DIR_BOX_COL, "Joystick");
-    drawTitle(currentLines, VIS_TITLE_ROW, MOUSE_DIR_BOX_COL, "Mouse (RS)");
-  } else {
-    drawJoyPair(currentLines, DIR_BOX_COL, FIRE_BOX_COL, state->anyUp,
-                state->anyDown, state->anyLeft, state->anyRight,
-                state->anyButton);
+    // With mouse mode off the right stick is not a cursor, so the joystick
+    // half keeps using any* and reacts to both sticks as it always has.
+    bool jUp = mouseMode ? state->padUp : state->anyUp;
+    bool jDown = mouseMode ? state->padDown : state->anyDown;
+    bool jLeft = mouseMode ? state->padLeft : state->anyLeft;
+    bool jRight = mouseMode ? state->padRight : state->anyRight;
+    bool jFire = mouseMode ? joyFire : state->anyButton;
+
+    // Only the enabled half gets boxes. The titles stay put either way and
+    // carry the state, so nothing moves when you toggle: an empty column is
+    // "off", not a rendering fault.
+    if (joystickMode) {
+      drawJoyPair(currentLines, DIR_BOX_COL, FIRE_BOX_COL, jUp, jDown, jLeft,
+                  jRight, jFire);
+    }
+    if (mouseMode) {
+      drawJoyPair(currentLines, MOUSE_DIR_BOX_COL, MOUSE_FIRE_BOX_COL,
+                  state->rstickUp, state->rstickDown, state->rstickLeft,
+                  state->rstickRight, state->btnRS);
+    }
   }
 
   // Help page: when the Help key is toggled on, replace the controller content
@@ -360,9 +384,11 @@ static void renderControllerScreen(const controller_state_t *state,
     static const char *const helpLines[] = {
         "",
         "Use your Bluetooth gamepad as an Atari",
-        "ST joystick and (optionally) mouse.",
+        "ST joystick and/or mouse, and a",
+        "controller for games that support Xpad",
         "",
         "P    Pair a new controller",
+        "J    Joystick on/off",
         "M    Right stick as mouse on/off",
         "H    Toggle joystick hook (see below)",
         "ESC  Exit to desktop and play!",
@@ -373,10 +399,8 @@ static void renderControllerScreen(const controller_state_t *state,
         "ETV  Works with most apps and games",
         "VBL  Great for GEM and TOS apps",
         "",
-        "Find out more:",
         "",
-        "Web  github.com/neilrackett/md-sidepad",
-        "X    x.com/neilrackett",
+        "Web  neilrackett.com/atarist",
     };
     for (uint8_t row = 1; row <= UI_ROW_COUNT - 3; row++) {
       memset(currentLines[row], ' ', TERM_SCREEN_SIZE_X);
@@ -426,6 +450,42 @@ static void renderControllerScreen(const controller_state_t *state,
     }
   }
 
+  // Visualiser titles, with the toggle letter in reverse video: "Joystick"
+  // and "Mouse (RS)" with J and M highlighted, so the keys that turn each
+  // half on and off are visible without consulting the footer.
+  //
+  // Emitted here rather than through the grid for the same reason as the
+  // footer: ESC p/q are not fixed-width cells, so the plain-char diff cannot
+  // hold them. The grid leaves this row blank and clears it on a full
+  // refresh, and we draw over it immediately after. Suppressed while the help
+  // page is up, since that overwrites the whole content area.
+  if (forceFullRefresh && !helpVisible) {
+    appendFmt(updates, sizeof(updates), &offset,
+              "\x1B"
+              "Y%c%c"
+              "\x1B"
+              "p"
+              "J"
+              "\x1B"
+              "q"
+              "oystick: %s",
+              (char)(TERM_POS_Y + VIS_TITLE_ROW),
+              (char)(TERM_POS_X + DIR_BOX_COL + 1),
+              joystickMode ? "on " : "off");
+    appendFmt(updates, sizeof(updates), &offset,
+              "\x1B"
+              "Y%c%c"
+              "\x1B"
+              "p"
+              "M"
+              "\x1B"
+              "q"
+              "ouse (RS): %s",
+              (char)(TERM_POS_Y + VIS_TITLE_ROW),
+              (char)(TERM_POS_X + MOUSE_DIR_BOX_COL + 1),
+              mouseMode ? "on " : "off");
+  }
+
   // Controls footer with reverse-video key names (VT52 ESC p = on, ESC q =
   // off). Emitted outside the plain-char grid because the escape codes are not
   // fixed-width cells. Only on a full refresh: the row is static, so it
@@ -457,12 +517,6 @@ static void renderControllerScreen(const controller_state_t *state,
               "\x1B"
               "q"
               "air "
-              "\x1B"
-              "p"
-              "M"
-              "\x1B"
-              "q"
-              "ouse "
               "\x1B"
               "p"
               "H"
@@ -548,8 +602,16 @@ static void writeBtJoyState(void) {
     if (btState.anyRight) bt |= 0x08;
     if (btState.anyButton) bt |= 0x40;
   }
+  // Joystick injection off: publish an idle packet rather than skipping the
+  // write, so the m68k hook sees "nothing held" instead of the last state
+  // before the toggle. Xpad is untouched by this; it has its own path.
+  if (!joystickMode) bt = 0;
+
   uint32_t romBase = (uint32_t)&__rom_in_ram_start__;
   SET_SHARED_VAR(SIDEPAD_BT_JOY_SLOT, (uint32_t)bt, romBase,
+                 CHANDLER_SHARED_VARIABLES_OFFSET);
+  // And tell the m68k, so the exit banner can list what is actually on.
+  SET_SHARED_VAR(SIDEPAD_JOY_ENABLED_SLOT, joystickMode ? 1u : 0u, romBase,
                  CHANDLER_SHARED_VARIABLES_OFFSET);
 }
 
@@ -584,7 +646,10 @@ static void writeBtMouseState(void) {
   uint8_t buttons = 0;
   int8_t dx = 0;
   int8_t dy = 0;
-  if (mouseMode) {
+  // Nothing to inject without a pad. The axes are centred at rest so this
+  // would publish zeros anyway, but saying it explicitly means a future
+  // change to the rest state cannot quietly start moving the cursor.
+  if (mouseMode && st.connected) {
     enabled = 1;
     dx = mouseAxisDelta(st.rx);
     dy = mouseAxisDelta(st.ry);
@@ -634,6 +699,23 @@ static void saveMouseMode(void) {
   settings_save(aconfig_getContext(), true);
 }
 
+// Load the persisted joystick flag from per-app config into joystickMode.
+static void loadJoystickMode(void) {
+  SettingsConfigEntry *entry =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_JOYSTICK);
+  // Absent key means a config written before this existed: default to on
+  // rather than silently taking the joystick away on upgrade.
+  joystickMode = (entry == NULL) || (strcmp(entry->value, "false") != 0);
+  DPRINTF("Joystick mode loaded from config: %s\n",
+          joystickMode ? "on" : "off");
+}
+
+// Persist the current joystick flag to per-app config flash.
+static void saveJoystickMode(void) {
+  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_JOYSTICK, joystickMode);
+  settings_save(aconfig_getContext(), true);
+}
+
 // Load the persisted hook-mode flag from per-app config into etvMode.
 static void loadHookMode(void) {
   SettingsConfigEntry *entry =
@@ -659,6 +741,7 @@ static void exitToGemDesktop(void) {
   // (the Atari reads ROM from RAM, so the bus is unaffected by the brief
   // write).
   saveMouseMode();
+  saveJoystickMode();
   saveHookMode();
 
   // The joystick injection hook only matters once a game is running, so install
@@ -750,6 +833,14 @@ static void handleUiKeystroke(char keystroke) {
       // Force a full redraw so the second pair / titles appear or disappear.
       mouseMode = !mouseMode;
       DPRINTF("Mouse mode: %s\n", mouseMode ? "on" : "off");
+      refreshControllerUI(true);
+      break;
+    case 'j':
+      // Toggle joystick injection, the same shape as M. Xpad keeps being
+      // published either way, so this only affects software reading the
+      // joystick port.
+      joystickMode = !joystickMode;
+      DPRINTF("Joystick mode: %s\n", joystickMode ? "on" : "off");
       refreshControllerUI(true);
       break;
     case 'h':
@@ -998,6 +1089,7 @@ void emul_start() {
   // Restore the persisted mouse-mode and hook-mode choices so the first UI
   // render reflects them without needing the user to toggle.
   loadMouseMode();
+  loadJoystickMode();
   loadHookMode();
 
   // 6. Bring up the BLE controller host.
