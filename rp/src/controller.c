@@ -57,6 +57,24 @@ typedef struct {
 
 static controller_runtime_t gRuntime = {0};
 
+// Clear the input snapshot to its REST state, which is not all-zero: the
+// stick axes are normalised with 0.5 at centre, so memsetting them to 0
+// reads as full deflection up and left. That is not academic. With mouse
+// mode on, the right stick at 0.0/0.0 makes mouseAxisDelta() return the
+// maximum negative delta on both axes, and the m68k hook injects that every
+// frame: the GEM cursor crawls into the top-left corner and fights the real
+// mouse, until the first stick report replaces the zeros with centred
+// values and it inexplicably starts working.
+//
+// Triggers stay at zero, which really is their rest value.
+static void resetInputToRest(void) {
+  memset(&gRuntime.input, 0, sizeof(gRuntime.input));
+  gRuntime.input.lx = 0.5f;
+  gRuntime.input.ly = 0.5f;
+  gRuntime.input.rx = 0.5f;
+  gRuntime.input.ry = 0.5f;
+}
+
 static float normalize_axis(int32_t value) {
   // Bluepad32 axes are signed, range -AXIS_NORMALIZE_RANGE/2 .. +range/2-1
   // (i.e. -512..511). Map to 0..1 with 0.5 at centre.
@@ -208,7 +226,7 @@ static void sidepad_platform_on_device_disconnected(uni_hid_device_t *d) {
   gRuntime.connected = false;
   gRuntime.connecting = false;
   gRuntime.connectedIdx = -1;
-  memset(&gRuntime.input, 0, sizeof(gRuntime.input));
+  resetInputToRest();
   gRuntime.deviceName[0] = '\0';
   restore_interrupts(irqState);
   DPRINTF("bluepad32: device disconnected %p\n", (void *)d);
@@ -293,6 +311,10 @@ int controller_init(void) {
     return 0;
   }
 
+  // Before anything can read the state: gRuntime is a zero-initialised
+  // static, and zero is not rest for the stick axes.
+  resetInputToRest();
+
   // Bring up the CYW43 chip. With CYW43_ENABLE_BLUETOOTH=1 this also powers the
   // Bluetooth controller, which Bluepad32 then drives via BTstack.
   int chipErr = network_initChipOnly();
@@ -312,7 +334,7 @@ int controller_init(void) {
   gRuntime.pairingRequested = false;
   gRuntime.connectedIdx = -1;
   gRuntime.deviceName[0] = '\0';
-  memset(&gRuntime.input, 0, sizeof(gRuntime.input));
+  resetInputToRest();
   snprintf(gRuntime.status, sizeof(gRuntime.status), "Scanning for controller...");
 
   return 0;
@@ -382,7 +404,7 @@ void controller_requestPairing(void) {
   gRuntime.connected = false;
   gRuntime.connecting = false;
   gRuntime.connectedIdx = -1;
-  memset(&gRuntime.input, 0, sizeof(gRuntime.input));
+  resetInputToRest();
   gRuntime.deviceName[0] = '\0';
   restore_interrupts(irqState);
 
