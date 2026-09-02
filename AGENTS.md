@@ -14,7 +14,7 @@ Template-derived **Sidecartridge Multi-device microfirmware app** targeting Atar
 
 - **ARM GNU Toolchain** — export `PICO_TOOLCHAIN_PATH` to its `arm-none-eabi/bin` dir. The project historically pins **14.2**; the current dev box uses **15.2** (`/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin`) and it builds and runs cleanly. Both work — the last toolchain-sensitive serving bug was removed by the inline hook-publish fix (see the ETV serving lesson below). If you see `arm-none-eabi-gcc not found`, this var is wrong.
 - **`atarist-toolkit-docker`** (`stcmd`) — needed for the m68k target. `stcmd` requires a PTY (`pty=true`). `target/atarist/build.sh` exports `STCMD_NO_TTY=1` for every stcmd call it makes; export it yourself only if invoking `stcmd` directly from a non-TTY context (CI, sub-shells).
-- **Raspberry Pi Debug Probe / Picoprobe** for the serial console — TX, RX, and **both** GND pins must be connected. The debug UART is the only "verification" channel (no test suite).
+- **Raspberry Pi Debug Probe / Picoprobe** for the serial console — TX, RX, and **both** GND pins must be connected. The debug UART is the main "verification" channel; the one host test is `make -C rp/test test`.
 - **SDK paths** — auto-set from the repo if unset; to set explicitly:
   ```bash
   export PICO_SDK_PATH=$REPO_ROOT/pico-sdk
@@ -40,7 +40,7 @@ Build flow (orchestrated by `build.sh`):
 3. Builds the RP firmware (`rp/build.sh`): pins submodule versions (pico-sdk 2.2.0, pico-extras sdk-2.2.0, fatfs-sdk at a specific commit), runs CMake, produces `rp/dist/rp-<board>.uf2`. FatFs config lives at `rp/src/ff/ffconf.h` and shadows the submodule's default via `target_include_directories(... BEFORE PRIVATE)` in `rp/src/CMakeLists.txt`, so the `fatfs-sdk` submodule stays pristine.
 4. Computes MD5, renames to `dist/<APP_UUID>-<VERSION>.uf2`, and substitutes UUID/MD5/version into `dist/<APP_UUID>.json` from the `desc/app.json` template.
 
-Successful builds drop UF2s into `dist/` and print the MD5 used in the generated JSON manifest. Verification = build succeeds, UF2 boots on hardware, manual interaction over the serial console. There is **no test suite**.
+Successful builds drop UF2s into `dist/` and print the MD5 used in the generated JSON manifest. Verification = `make -C rp/test test` passes (the Xpad block writer's host test, also run by CI), the build succeeds, the UF2 boots on hardware, and behaviour is confirmed over the serial console.
 
 ### Build gotchas
 - **CMake always builds with `-DCMAKE_BUILD_TYPE=MinSizeRel`** regardless of `<build_type>`. A full `Release` previously caused breakage (memory/over-optimization); the legacy line is left commented in `rp/build.sh`. `<build_type>` only controls the `DEBUG_MODE` macro and the dist filename.
@@ -125,20 +125,22 @@ Two things it is worth knowing before changing anything here.
 header, so a bump that moves a field fails the build rather than
 producing a block nobody agrees with. Keep them.
 
-`target/atarist/src/userfw.s` hand-writes `XPAD_COOKIE` rather than
-including xpad's generated `xpad.inc`. That is deliberate: `stcmd`
-mounts one directory, so a submodule at the repository root is not
-visible to the cross assembler when the ST build's working folder is
-`target/atarist`. It is one constant and it is checked against the
-generated file by eye; if more are ever needed, copy `xpad.inc` into
-the mounted directory as a build step rather than reaching outside it.
+`target/atarist/src/userfw.s` includes xpad's generated `xpad.inc`
+directly. That works because `target/atarist/build.sh` mounts the
+repository root (`stcmd` mounts exactly one directory) and runs make in
+the subdirectory, with `-I../../xpad/src` in the Makefile; build.sh
+refuses with a clear message if the submodule is missing. The one Xpad
+number still spelled out by hand is `XPAD_BLOCK equ $FA2300`, the
+block's home in the cartridge window, which is this product's choice
+rather than xpad's and is pinned on the RP side by a `_Static_assert`
+against `CHANDLER_APP_FREE_OFFSET`.
 
 ## MD/Sidepad specifics
 
 The pieces below are hard-won and non-obvious — read before touching the command path, joystick injection, or the booster/desktop exits.
 
 ### Keymap (single-key, `sidepadInputCb`)
-`ESC` = exit to GEM desktop (installs the joystick hook on the way out), `P` = pair, `M` = toggle right-stick-as-mouse, **`H` = toggle VBL (`$70`) / ETV (`$400`) hook mode**, `B` = exit to Booster (full chip reset). The dedicated ST **Help** key toggles a help screen; it carries no useful ASCII, so `sidepadInputCb` dispatches it from the scan code (`SCAN_HELP = 0x62`) in bits 16–23 of the keystroke payload (`TERM_KEYBOARD_SCAN_MASK`). The template terminal is **line-based** (`term_command_cb` buffers until Enter), so MD/Sidepad registers its **own** `chandler_addCB(sidepadInputCb)` to act on the first keypress. `APP_TERMINAL_START` = ESC, `APP_TERMINAL_KEYSTROKE` = any other key. `H`/`M` persist via per-app config (`ACONFIG_PARAM_HOOK` / `ACONFIG_PARAM_MOUSE`), saved in `exitToGemDesktop`.
+`ESC` = exit to GEM desktop (installs the joystick hook on the way out), `P` = pair, `M` = toggle right-stick-as-mouse, `J` = toggle joystick injection (Xpad is published either way), **`H` = toggle VBL (`$70`) / ETV (`$400`) hook mode**, `B` = exit to Booster (full chip reset). The dedicated ST **Help** key toggles a help screen; it carries no useful ASCII, so `sidepadInputCb` dispatches it from the scan code (`SCAN_HELP = 0x62`) in bits 16–23 of the keystroke payload (`TERM_KEYBOARD_SCAN_MASK`). The template terminal is **line-based** (`term_command_cb` buffers until Enter), so MD/Sidepad registers its **own** `chandler_addCB(sidepadInputCb)` to act on the first keypress. `APP_TERMINAL_START` = ESC, `APP_TERMINAL_KEYSTROKE` = any other key. `H`/`M`/`J` persist via per-app config (`ACONFIG_PARAM_HOOK` / `ACONFIG_PARAM_MOUSE` / `ACONFIG_PARAM_JOYSTICK`; joystick defaults on when the key is absent), saved in `exitToGemDesktop`.
 
 ### Joystick injection (`target/atarist/src/userfw.s`)
 - Hook the **VBL autovector `$70`**, *not* a `_vblqueue` slot — GEM reclaims free `_vblqueue` slots when the desktop loads, silently de-linking the hook. `$70` is the OS VBL entry; GEM only adds/removes `_vblqueue` entries (which the `$70` handler walks), so a hook there survives into the desktop. Chain to the saved original.
@@ -199,7 +201,7 @@ Bias toward caution over speed. For trivial tasks, use judgment.
 1. **Think before coding** — state assumptions; if multiple interpretations exist, present them; if a simpler approach exists, say so; if something's unclear, stop and ask.
 2. **Simplicity first** — minimum code that solves the problem, nothing speculative. No abstractions for single-use code (the ETV bug is a live reminder: a single-use helper broke serving where an inline store did not). No unrequested flexibility, no error handling for impossible scenarios. If 200 lines could be 50, rewrite.
 3. **Surgical changes** — touch only what you must; don't "improve" adjacent code/formatting; match existing style; mention unrelated dead code rather than deleting it; remove only what your change orphans. Every changed line should trace to the request.
-4. **Goal-driven execution** — define success criteria and loop until verified. With no test suite here, "verified" means: builds, boots on hardware, and the behaviour is confirmed over the serial console. State a brief plan with a verification check per step for multi-step work.
+4. **Goal-driven execution** — define success criteria and loop until verified. "Verified" here means: `make -C rp/test test` passes, the build succeeds, it boots on hardware, and the behaviour is confirmed over the serial console. State a brief plan with a verification check per step for multi-step work.
 5. **No AI attribution** — never add AI-tool attribution to commits, PRs, code comments, docs, or any artifact. No `Co-Authored-By: Claude …`, no "Generated with Claude Code / ChatGPT", no "AI-assisted" notes. Write everything as the human author.
 
 Keep this file current as the process evolves so every agent starts with the latest tribal knowledge.

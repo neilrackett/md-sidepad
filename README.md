@@ -63,7 +63,7 @@ joystick can express. Software written for Xpad therefore gets the whole
 pad, analogue sticks and all.
 
 It runs alongside everything above rather than replacing it, and is
-unaffected by the mouse and hook settings: those change what gets
+unaffected by the joystick, mouse and hook settings: those change what gets
 injected, never what Xpad reports. Nothing needs enabling.
 
 Xpad is a specification rather than a feature of this product, so

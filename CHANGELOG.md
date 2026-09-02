@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.1.0 (2026-09-02) - release
+
+### Xpad: the whole controller, not just four directions and fire
+
+MD/Sidepad now publishes your controller as an
+[Xpad](https://github.com/neilrackett/atarist-xpad) block: a shared
+state block, found through the cookie jar, carrying every button, both
+sticks and both triggers rather than the four directions and one fire
+button a joystick can express. Software written for Xpad gets the whole
+pad. It runs alongside joystick and mouse injection rather than
+replacing them, and needs nothing enabled.
+
+The block lives in the cartridge window and consumers read it in place:
+no copy, no hook, and nothing for a game to clobber.
+
+### Joystick on/off
+
+`J` toggles joystick injection, the same way `M` toggles the mouse, and
+persists with it. Xpad is published either way, so a game that reads
+Xpad keeps working with joystick injection off. Both visualiser halves
+now keep their titles and show their state, so the layout does not move
+when you toggle.
+
+### Fixes
+
+The GEM cursor no longer drifts to the top-left when mouse mode is on
+and you use the real mouse before touching the right stick. The stick
+axes are normalised with 0.5 at centre, and the state block started
+zeroed, so an untouched right stick read as full deflection up and left
+and was injected every frame. Rest is now centred everywhere the input
+is cleared, which also covers a pad disconnecting while deflected.
+
+### Under the hood
+
+Xpad's ABI comes from the upstream repository as a submodule rather
+than a vendored copy, on both sides: C through `xpad.h`, m68k assembly
+through the generated `xpad.inc`. Clone with `--recursive`.
+
+---
+
 ## v1.2.1 (2026-05-20) - release
 
 ### Sync ack: no false positives on missing hardware
