@@ -37,7 +37,12 @@ mkdir dist
 # Build the project in the target architecture
 echo "Building target project"
 cd target/atarist
-./build.sh "$SCRIPT_DIR/target/atarist" release
+if ! ./build.sh "$SCRIPT_DIR/target/atarist" release; then
+    echo "ERROR: target/atarist build failed; not continuing to the RP build."
+    echo "       (A release built past this point would embed the committed"
+    echo "       target_firmware.h, silently shipping a stale cartridge.)"
+    exit 1
+fi
 cd ../..
 echo "Done building target project"
 

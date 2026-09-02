@@ -16,6 +16,13 @@ jobs:
     steps:  
     - name: Checkout the code
       uses: actions/checkout@v3
+      with:
+        # The m68k build includes xpad/src/xpad.inc, and it runs before
+        # rp/build.sh (which inits submodules itself), so checkout has to
+        # bring xpad in. Top level only, deliberately: that is enough for
+        # xpad, which has no submodules of its own, and it leaves the
+        # pico-sdk tree to rp/build.sh's recursive init exactly as before.
+        submodules: true
   
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v2
@@ -32,6 +39,9 @@ jobs:
 
     - name: Run - remove interactive
       run: sed -i 's/-it//' /usr/local/bin/stcmd
+
+    - name: Run - Host tests
+      run: make -C rp/test test
 
     - name: Run - Build PICO_W release version
       env:
