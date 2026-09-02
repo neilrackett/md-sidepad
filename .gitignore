@@ -63,3 +63,4 @@ dist/
 screenlog.*
 tmp/
 examples/*.tos
+uuid.txt
