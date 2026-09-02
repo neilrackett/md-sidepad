@@ -57,8 +57,8 @@
 // Shared-variable slot carrying the BT mouse packet to the m68k userfw hook
 // when mouse mode is on (right stick -> GEM cursor). Packed big-endian, so the
 // m68k reads (at $FA2024): byte0 = enabled, byte1 = buttons (bit1 = left / R3),
-// byte2 = signed dx, byte3 = signed dy (per-frame deltas). Step 2 only
-// publishes it; the m68k does not read it yet (that is step 3).
+// byte2 = signed dx, byte3 = signed dy (per-frame deltas). The resident
+// hook reads all four in .di_mouse and drives mousevec with them.
 #define SIDEPAD_BT_MOUSE_SLOT 5
 
 // Shared-variable slot carrying the VBL/ETV hook-mode flag to the m68k userfw
@@ -68,8 +68,10 @@
 #define SIDEPAD_HOOK_MODE_SLOT 6
 
 // Shared-variable slot carrying the joystick-enabled flag to the m68k, so the
-// exit banner can list what is actually on (LSB at m68k $FA202F). Mirrors the
-// mouse flag in slot 5; Xpad is always published and so needs no flag.
+// exit banner can list what is actually on (LSB at m68k $FA202F). Banner only,
+// unlike slot 5, which the resident hook reads to gate mouse injection: the
+// joystick is gated on this side, by publishing an idle packet. Xpad is always
+// published and so needs no flag.
 #define SIDEPAD_JOY_ENABLED_SLOT 7
 
 // Right-stick-as-mouse tuning (analog, proportional). Deadzone around centre
@@ -161,7 +163,7 @@ static void appendLineAt(char *buffer, size_t bufferSize, size_t *offset,
 #define VIS_TITLE_ROW (DIR_BOX_ROW + DIR_BOX_INNER_H + 3)
 
 // Right-stick-as-mouse toggle ([M] in the controller UI). Persisted to per-app
-// config (ACONFIG_PARAM_MOUSE): loaded at startup and saved on each toggle, so
+// config (ACONFIG_PARAM_MOUSE): loaded at startup and saved on exit to desktop, so
 // the choice survives reboots.
 static bool mouseMode = false;
 
@@ -172,7 +174,7 @@ static bool joystickMode = true;
 
 // VBL/ETV hook-mode toggle ([H] in the controller UI). false = VBL ($70), true
 // = ETV ($400). Defaults to ETV (ACONFIG_PARAM_HOOK default is "true"); this
-// initial value is overwritten by loadHookMode() from per-app config at
+// initial value is overwritten from per-app config at
 // startup. Published to shared-var slot 6 (inline in exitToGemDesktop) on the
 // way out to the desktop so the m68k userfw installer hooks the matching
 // vector. ETV survives programs that replace the VBL vector; the m68k
@@ -272,15 +274,30 @@ static void drawJoyPair(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t dirCol,
           fire ? BLOCK_CHAR : '\0', -1, -1, 1);
 }
 
-// Left-aligns a title under a direction box, starting one char in from the
-// box's left edge (dirCol + 1, the box's inner-left column) at the given row.
-static void drawTitle(char lines[][TERM_SCREEN_SIZE_X + 1], uint8_t row,
-                      uint8_t dirCol, const char *text) {
-  size_t len = strlen(text);
-  size_t start = dirCol + 1;
-  if (start + len <= TERM_SCREEN_SIZE_X) {
-    memcpy(lines[row] + start, text, len);
-  }
+// Escape-sequence scratch for one screen refresh, sized once so the helper
+// below and the buffer in renderControllerScreen cannot disagree.
+#define UPDATES_SIZE 2048
+
+// One visualiser title: "Joystick: on" with the toggle letter in reverse
+// video. Emitted as escape sequences rather than into the character grid,
+// because ESC p/q are not fixed-width cells and the grid diff counts cells.
+//
+// "on " keeps the trailing space deliberately: this row is drawn over the
+// grid rather than through it, so it gets no clear-to-width and a shorter
+// value would leave the "f" of a previous "off" behind.
+static void emitToggleTitle(char *updates, size_t *offset, uint8_t dirCol,
+                            char key, const char *rest, bool on) {
+  appendFmt(updates, UPDATES_SIZE, offset,
+            "\x1B"
+            "Y%c%c"
+            "\x1B"
+            "p"
+            "%c"
+            "\x1B"
+            "q"
+            "%s: %s",
+            (char)(TERM_POS_Y + VIS_TITLE_ROW),
+            (char)(TERM_POS_X + dirCol + 1), key, rest, on ? "on " : "off");
 }
 
 static void renderControllerScreen(const controller_state_t *state,
@@ -337,17 +354,16 @@ static void renderControllerScreen(const controller_state_t *state,
     memcpy(currentLines[3], countdown, countdownLen);
   }
 
-  // Visualiser(s). Mouse mode off: a single pair shows the combined joystick
-  // (both sticks + D-pad), exactly as before. Mouse mode on: the left pair
-  // shows the joystick (left stick + D-pad, fire excluding the R3 mouse click)
-  // and a cloned right pair shows the mouse (right stick + R3), each titled
-  // below. Step 1 is visual only: the actual joystick injection still uses any*
-  // either way, so the pad reacts identically with mouse mode on or off.
-  // Both pairs are always on screen, so the layout does not move when a mode
-  // is toggled and you can see at a glance what each half is doing. A disabled
-  // half simply shows nothing lit. Titles are emitted after the grid diff
-  // (see below) because their toggle letters are in reverse video, which the
-  // plain-char grid cannot carry.
+  // Visualiser. Both titles are always on screen and carry their own state,
+  // so nothing moves when you toggle; only an enabled half draws boxes, and
+  // an empty column reads as off rather than as a fault.
+  //
+  // With mouse mode on, the joystick half narrows to the left stick and D-pad
+  // and drops R3 from its fire condition, because R3 is then the mouse button.
+  // That mirrors what writeBtJoyState() actually injects.
+  //
+  // Titles are emitted after the grid diff (see below) because their toggle
+  // letters are in reverse video, which the plain-char grid cannot carry.
   {
     bool joyFire = state->btnA || state->btnB || state->btnX || state->btnY ||
                    state->btnLB || state->btnRB || state->btnLS ||
@@ -432,7 +448,7 @@ static void renderControllerScreen(const controller_state_t *state,
   // names in reverse video, so it is not part of this plain-char grid (the
   // ESC p/q codes are not fixed-width cells).
 
-  char updates[2048] = {0};
+  char updates[UPDATES_SIZE] = {0};
   size_t offset = 0;
 
   if (forceFullRefresh) {
@@ -460,30 +476,10 @@ static void renderControllerScreen(const controller_state_t *state,
   // refresh, and we draw over it immediately after. Suppressed while the help
   // page is up, since that overwrites the whole content area.
   if (forceFullRefresh && !helpVisible) {
-    appendFmt(updates, sizeof(updates), &offset,
-              "\x1B"
-              "Y%c%c"
-              "\x1B"
-              "p"
-              "J"
-              "\x1B"
-              "q"
-              "oystick: %s",
-              (char)(TERM_POS_Y + VIS_TITLE_ROW),
-              (char)(TERM_POS_X + DIR_BOX_COL + 1),
-              joystickMode ? "on " : "off");
-    appendFmt(updates, sizeof(updates), &offset,
-              "\x1B"
-              "Y%c%c"
-              "\x1B"
-              "p"
-              "M"
-              "\x1B"
-              "q"
-              "ouse (RS): %s",
-              (char)(TERM_POS_Y + VIS_TITLE_ROW),
-              (char)(TERM_POS_X + MOUSE_DIR_BOX_COL + 1),
-              mouseMode ? "on " : "off");
+    emitToggleTitle(updates, &offset, DIR_BOX_COL, 'J', "oystick",
+                    joystickMode);
+    emitToggleTitle(updates, &offset, MOUSE_DIR_BOX_COL, 'M', "ouse (RS)",
+                    mouseMode);
   }
 
   // Controls footer with reverse-video key names (VT52 ESC p = on, ESC q =
@@ -610,9 +606,6 @@ static void writeBtJoyState(void) {
   uint32_t romBase = (uint32_t)&__rom_in_ram_start__;
   SET_SHARED_VAR(SIDEPAD_BT_JOY_SLOT, (uint32_t)bt, romBase,
                  CHANDLER_SHARED_VARIABLES_OFFSET);
-  // And tell the m68k, so the exit banner can list what is actually on.
-  SET_SHARED_VAR(SIDEPAD_JOY_ENABLED_SLOT, joystickMode ? 1u : 0u, romBase,
-                 CHANDLER_SHARED_VARIABLES_OFFSET);
 }
 
 // Map a centred analog axis (0..1, 0.5 = rest) to a signed per-frame cursor
@@ -637,8 +630,7 @@ static int8_t mouseAxisDelta(float axis) {
 // Publish the right-stick-as-mouse packet to the shared region for the m68k VBL
 // hook: enabled flag, left-button (R3) state, and signed per-frame dx/dy. When
 // mouse mode is off, publish a disabled/idle packet so the hook does nothing.
-// Step 2: the m68k does not consume slot 5 yet, so this is verifiable only via
-// the serial log below.
+// The resident hook consumes this every tick while mouse mode is on.
 static void writeBtMouseState(void) {
   controller_state_t st = {0};
   controller_getState(&st);
@@ -661,7 +653,7 @@ static void writeBtMouseState(void) {
   SET_SHARED_VAR(SIDEPAD_BT_MOUSE_SLOT, v, romBase,
                  CHANDLER_SHARED_VARIABLES_OFFSET);
 
-  // Step 2 verification: log only when the packed packet changes, so the serial
+  // Log only when the packed packet changes, so the serial
   // console shows the analog mapping without flooding at the poll rate.
   static uint32_t prevV = 0;
   if (v != prevV) {
@@ -685,50 +677,28 @@ static void writeExitMessage(void) {
                  CHANDLER_SHARED_VARIABLES_OFFSET);
 }
 
-// Load the persisted mouse-mode flag from per-app config into mouseMode.
-static void loadMouseMode(void) {
-  SettingsConfigEntry *entry =
-      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_MOUSE);
-  mouseMode = (entry != NULL) && (strcmp(entry->value, "true") == 0);
-  DPRINTF("Mouse mode loaded from config: %s\n", mouseMode ? "on" : "off");
+// Read one persisted bool. `absentDefault` is what an upgrade gets: a config
+// written before the key existed has no opinion, and for some flags "no
+// opinion" must not mean "off".
+static bool loadBoolSetting(const char *key, bool absentDefault) {
+  SettingsConfigEntry *entry = settings_find_entry(aconfig_getContext(), key);
+
+  if (entry == NULL) {
+    return absentDefault;
+  }
+  return strcmp(entry->value, "true") == 0;
 }
 
-// Persist the current mouse-mode flag to per-app config flash.
-static void saveMouseMode(void) {
-  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_MOUSE, mouseMode);
-  settings_save(aconfig_getContext(), true);
+// Stage one bool for the next save. Deliberately does NOT flush: settings_save
+// erases and reprograms a whole flash sector, so the three toggles are staged
+// and committed once, in saveSettings(), rather than three sectors' worth of
+// erase on the way out to the desktop.
+static void putBoolSetting(const char *key, bool value) {
+  settings_put_bool(aconfig_getContext(), key, value);
 }
 
-// Load the persisted joystick flag from per-app config into joystickMode.
-static void loadJoystickMode(void) {
-  SettingsConfigEntry *entry =
-      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_JOYSTICK);
-  // Absent key means a config written before this existed: default to on
-  // rather than silently taking the joystick away on upgrade.
-  joystickMode = (entry == NULL) || (strcmp(entry->value, "false") != 0);
-  DPRINTF("Joystick mode loaded from config: %s\n",
-          joystickMode ? "on" : "off");
-}
-
-// Persist the current joystick flag to per-app config flash.
-static void saveJoystickMode(void) {
-  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_JOYSTICK, joystickMode);
-  settings_save(aconfig_getContext(), true);
-}
-
-// Load the persisted hook-mode flag from per-app config into etvMode.
-static void loadHookMode(void) {
-  SettingsConfigEntry *entry =
-      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_HOOK);
-  etvMode = (entry != NULL) && (strcmp(entry->value, "true") == 0);
-  DPRINTF("Hook mode loaded from config: %s\n", etvMode ? "ETV" : "VBL");
-}
-
-// Persist the current hook-mode flag to per-app config flash.
-static void saveHookMode(void) {
-  settings_put_bool(aconfig_getContext(), ACONFIG_PARAM_HOOK, etvMode);
-  settings_save(aconfig_getContext(), true);
-}
+// Commit everything staged above. One erase+program, not three.
+static void saveSettings(void) { settings_save(aconfig_getContext(), true); }
 
 // Leave the terminal for the GEM desktop and never return: install the m68k
 // joystick hook, publish the exit banner, hand off to boot_gem, then loop
@@ -740,9 +710,10 @@ static void exitToGemDesktop(void) {
   // have not started, so this is the one quiescent point for the flash write
   // (the Atari reads ROM from RAM, so the bus is unaffected by the brief
   // write).
-  saveMouseMode();
-  saveJoystickMode();
-  saveHookMode();
+  putBoolSetting(ACONFIG_PARAM_MOUSE, mouseMode);
+  putBoolSetting(ACONFIG_PARAM_JOYSTICK, joystickMode);
+  putBoolSetting(ACONFIG_PARAM_HOOK, etvMode);
+  saveSettings();
 
   // The joystick injection hook only matters once a game is running, so install
   // it now, as we leave the terminal for the desktop. Installing it earlier
@@ -761,6 +732,13 @@ static void exitToGemDesktop(void) {
     *((volatile uint16_t *)(hookSlot + 2)) = etvMode ? 1u : 0u;
     *((volatile uint16_t *)(hookSlot)) = 0u;
   }
+  // Same idea for the joystick-enabled flag the exit banner lists. Latched
+  // once here rather than rewritten every tick: J can only be pressed in the
+  // terminal, which has just exited, and the banner is not read until the
+  // m68k's first CMD_START after this.
+  SET_SHARED_VAR(SIDEPAD_JOY_ENABLED_SLOT, joystickMode ? 1u : 0u,
+                 (uint32_t)&__rom_in_ram_start__,
+                 CHANDLER_SHARED_VARIABLES_OFFSET);
   // Lay down the Xpad block before the m68k installer runs, because the same
   // CMD_START burst that installs the hook also installs the cookie pointing
   // at it. A consumer that looked before this ran would find a valid cookie
@@ -770,7 +748,7 @@ static void exitToGemDesktop(void) {
   for (int i = 0; i < SIDEPAD_HOOK_START_TICKS; i++) {
     SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_START);
     writeBtJoyState();
-    writeBtMouseState();  // valid before the hook (step 3) reads slot 5
+    writeBtMouseState();  // publish before the hook starts reading slot 5
     xpadstate_publish();
     controller_poll();
     sleep_ms(SLEEP_LOOP_MS);
@@ -845,8 +823,8 @@ static void handleUiKeystroke(char keystroke) {
       break;
     case 'h':
       // Toggle the VBL/ETV hook mode. Persisted on exit to desktop (like mouse
-      // mode); UI-only for now (the m68k still installs the VBL hook). Force a
-      // full redraw so the footer's Hook:VBL/ETV label updates.
+      // mode), and acted on: the installer reads slot 6 and hooks $70 or $400
+      // accordingly. Force a full redraw so the footer's Hook label updates.
       etvMode = !etvMode;
       DPRINTF("Hook mode: %s\n", etvMode ? "ETV" : "VBL");
       refreshControllerUI(true);
@@ -1088,9 +1066,10 @@ void emul_start() {
 
   // Restore the persisted mouse-mode and hook-mode choices so the first UI
   // render reflects them without needing the user to toggle.
-  loadMouseMode();
-  loadJoystickMode();
-  loadHookMode();
+  mouseMode = loadBoolSetting(ACONFIG_PARAM_MOUSE, false);
+  // Absent means a config predating the toggle: keep the joystick.
+  joystickMode = loadBoolSetting(ACONFIG_PARAM_JOYSTICK, true);
+  etvMode = loadBoolSetting(ACONFIG_PARAM_HOOK, false);
 
   // 6. Bring up the BLE controller host.
   // Sidepad does not use WiFi: the CYW43 chip is shared between WiFi and

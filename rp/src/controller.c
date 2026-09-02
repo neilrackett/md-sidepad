@@ -334,7 +334,6 @@ int controller_init(void) {
   gRuntime.pairingRequested = false;
   gRuntime.connectedIdx = -1;
   gRuntime.deviceName[0] = '\0';
-  resetInputToRest();
   snprintf(gRuntime.status, sizeof(gRuntime.status), "Scanning for controller...");
 
   return 0;

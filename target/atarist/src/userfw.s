@@ -69,10 +69,9 @@ BT_MOUSE_DY         equ $FA2027     ; signed per-frame dy
 ; the cookie jar and read it straight out of the window: no copy, no hook,
 ; and nothing for a game to clobber. Must match XPADSTATE_ST_BLOCK in
 ; rp/src/include/xpadstate.h.
-COOKIE_JAR          equ $5A0        ; .l  system cookie jar pointer
-; XPAD_COOKIE and the rest of the ABI come from the xpad submodule,
-; generated from xpad.h by `make inc` there, so they cannot be
-; transcribed wrongly here. See the -I in the Makefile.
+; XPAD_COOKIE, XPAD_JAR and the rest of the ABI come from the xpad
+; submodule, generated from xpad.h by `make inc` there, so they cannot
+; be transcribed wrongly here. See the -I in the Makefile.
     include "xpad.inc"
 
 XPAD_BLOCK          equ $FA2300     ; the block itself, in the cartridge window
@@ -175,7 +174,7 @@ userfw:
 ; nothing else. Clobbers d0/a0, both saved by the caller.
 ; -----------------------------------------------------------------------
 install_xpad_cookie:
-    move.l  COOKIE_JAR.w, d0
+    move.l  XPAD_JAR.w, d0
     beq.s   .xc_done                ; no jar: nothing we can do from here
     move.l  d0, a0
 

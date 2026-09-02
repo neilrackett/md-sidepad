@@ -365,8 +365,9 @@ boot_gem:
 	;
 	; All banners (VT52 clear + fixed text) live here in ROM (read from the
 	; cartridge, which is readable), so nothing is subject to the unreliable
-	; shared-region string transfer; the RP supplies only the connected flag
-	; (slot 4) and the mouse-mode flag (slot 5) to pick between them.
+	; shared-region string transfer; the RP supplies only the flags that
+	; pick between them: connected (slot 4), mouse (slot 5) and joystick
+	; (slot 7).
 	tst.b	EXIT_FLAG_ADDR				; connected?
 	beq.s	.bg_noconn
 

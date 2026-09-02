@@ -89,9 +89,15 @@ static void put8(uint32_t off, uint8_t v)
 #define OFF_SEQ 14
 #define OFF_PAD_COUNT 16
 #define OFF_ACTIVE 17
-#define OFF_PROVIDER 18
-#define OFF_REQ 22
-#define OFF_PADS 26
+/* Past the fixed header the block holds two m68k pointers, so these
+ * cannot be asserted against offsetof: on ARM the same fields sit at
+ * 20/24/28. Derive them from the one constant that IS asserted below,
+ * plus the single fact that makes them m68k-specific, so there is one
+ * hand-written number here rather than three. */
+#define M68K_PTR_SIZE 4
+#define OFF_PROVIDER XPAD_HDR_FIXED
+#define OFF_REQ (OFF_PROVIDER + M68K_PTR_SIZE)
+#define OFF_PADS (OFF_REQ + M68K_PTR_SIZE)
 
 _Static_assert(OFF_MAGIC == offsetof(XPAD, magic), "magic moved");
 _Static_assert(OFF_VERSION == offsetof(XPAD, version), "version moved");
