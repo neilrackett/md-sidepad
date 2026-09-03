@@ -6,15 +6,29 @@ name: Release
 # exactly as they are: gh release upload touches assets only.
 
 on:
+  # Anything landing on main is a release: a merge, or a direct push.
+  # Tag pushes do not match a branch filter, so the tags this workflow
+  # pushes cannot trigger it again.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Two merges in quick succession would otherwise race: both force-move
+# the latest tag and clobber the same two assets, and the loser decides
+# what the release ends up holding. Newest commit wins instead.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    # The tags land on the commit that was built, so only main releases.
+    # The push trigger already filters to main; this is what stops a
+    # manual dispatch from some other branch tagging and releasing it.
     if: github.ref == 'refs/heads/main'
     steps:
     - name: Check the APP_UUID_KEY secret is set
@@ -47,10 +61,17 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
 
     - name: Install AtariST Toolkit Docker image
-      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.0.0/install_atarist_toolkit_docker.sh | bash
-
-    - name: Run - remove interactive
-      run: sed -i 's/-it//' /usr/local/bin/stcmd
+      # Track the latest installer, not v1.0.0. The stcmd that v1.0.0
+      # generates takes the Docker image tag from the ambient $VERSION,
+      # and build.sh exports VERSION from version.txt, so CI went looking
+      # for an image tagged with the app's own version and every release
+      # run died with "manifest unknown". Newer installers read
+      # STCMD_IMAGE_TAG instead, so there is nothing left to collide, and
+      # they honour STCMD_NO_TTY (which build.sh already sets on every
+      # call) rather than needing the -it flag sed'd out of the wrapper.
+      # The image tag was never pinned in either case: both installers
+      # default to :latest.
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/latest/download/install_atarist_toolkit_docker.sh | bash
 
     - name: Build
       # The Makefile skips the version bump, so this builds exactly what

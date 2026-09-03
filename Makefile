@@ -2,6 +2,9 @@
 VERSION := $(shell cat version.txt)
 DEFAULT_APP_UUID_KEY := 44444444-4444-4444-8444-444444444444
 UUID_FROM_FILE := $(strip $(shell [ -f uuid.txt ] && tr -d '\r\n' < uuid.txt))
+# APP_UUID_KEY, not APP_UUID: that is the environment variable
+# rp/src/CMakeLists.txt reads to define CURRENT_APP_UUID_KEY, so the name
+# is upstream's rather than ours to shorten.
 APP_UUID_KEY_RESOLVED := $(if $(strip $(APP_UUID_KEY)),$(strip $(APP_UUID_KEY)),$(if $(UUID_FROM_FILE),$(UUID_FROM_FILE),$(DEFAULT_APP_UUID_KEY)))
 UART_BAUD ?= 115200
 UART_DEV ?=
