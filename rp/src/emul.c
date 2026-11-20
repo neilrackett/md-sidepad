@@ -260,10 +260,10 @@ static bool helpToggleValid = false;
 
 // Auto-exit countdown: once a controller connects, the terminal counts down for
 // SIDEPAD_AUTOEXIT_SECONDS then exits to the desktop as if ESC was pressed. Any
-// key cancels the running countdown for the rest of the session
-// (autoExitCancelled is sticky, so a later disconnect/reconnect does not
-// restart it). A disconnect alone just stops the current run; reconnecting
-// restarts it unless it was key-cancelled.
+// key cancels it for the rest of the session, whether it is running or has
+// yet to start (autoExitCancelled is sticky, so a later connect or reconnect
+// does not start it). A disconnect alone just stops the current run;
+// reconnecting restarts it unless it was key-cancelled.
 #define SIDEPAD_AUTOEXIT_SECONDS 10
 static bool autoExitActive = false;
 static bool autoExitCancelled = false;
@@ -1062,14 +1062,15 @@ static void sidepadInputCb(TransmissionProtocol *protocol,
     }
     lastKeyToken = keyToken;
   }
-  // Any key cancels a running auto-exit countdown, and keeps it cancelled for
-  // the rest of the session. Only mark cancelled when one was actually running,
-  // so keys pressed before the first connect (e.g. [R] to reset) don't suppress
-  // the first countdown. Keys with actions (p/m/x/esc) still perform them
-  // below. Only the terminal's own commands are keys: the Xpad ones come from
-  // the resident hook, once the terminal has gone.
-  if (autoExitActive && ((protocol->command_id == APP_TERMINAL_START) ||
-                         (protocol->command_id == APP_TERMINAL_KEYSTROKE))) {
+  // Any key cancels the auto-exit countdown, and keeps it cancelled for the
+  // rest of the session. That includes a key pressed before a pad has
+  // connected: someone changing settings is using the terminal, and should
+  // not be thrown out of it when their pad joins. Keys with actions
+  // (r/m/j/x/h/esc) still perform them below. Only the terminal's own
+  // commands are keys: the Xpad ones come from the resident hook, once the
+  // terminal has gone.
+  if ((protocol->command_id == APP_TERMINAL_START) ||
+      (protocol->command_id == APP_TERMINAL_KEYSTROKE)) {
     autoExitActive = false;
     autoExitCancelled = true;
   }

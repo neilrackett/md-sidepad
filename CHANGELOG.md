@@ -13,6 +13,15 @@ straight back again. A TT is fast enough to send a key a second time
 before the Multi-device has answered the first, and the second was
 taken for a new keypress. It is now taken for the same one.
 
+### A key cancels the countdown before it starts
+
+Once a controller connects, MD/Sidepad counts down and leaves for the
+desktop unless a key is pressed. A key pressed before the controller
+connected did not count, so changing settings first and connecting
+afterwards still started the countdown. Any key at MD/Sidepad's screen
+now cancels it, whether or not it has started; `Esc` takes you to the
+desktop when you are ready.
+
 ## v1.5.0 (unreleased)
 
 ### Up to four controllers

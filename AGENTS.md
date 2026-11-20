@@ -229,7 +229,7 @@ Publishing the hook-mode flag via a `static void writeHookMode()` **helper funct
 
 ### Other gotchas
 - Bluepad32's CMake defaults to `pico_cyw43_arch_none`; `rp/src/CMakeLists.txt` patches it at configure time to `pico_cyw43_arch_lwip_poll` so it coexists with lwIP without modifying the submodule.
-- Once a controller connects, the terminal counts down `SIDEPAD_AUTOEXIT_SECONDS` (10) then exits to the desktop as if ESC was pressed (any key/controller input cancels, stickily).
+- Once a controller connects, the terminal counts down `SIDEPAD_AUTOEXIT_SECONDS` (10) then exits to the desktop as if ESC was pressed (any key/controller input cancels, stickily; a key pressed before a pad connects cancels it too, so it never starts).
 
 ### EmuMD (`mdfw.ini`, `emu/`)
 `make emu` runs the real firmware in Hatari through [EmuMD](https://github.com/neilrackett/emumd) (submodule `emu/emumd`; `EMUMD=../emumd` for a checkout); `make emu-test` (`emu/test.sh`) is the end-to-end test of everything above: four slots, a second pad, rumble out and back, the safety stop not cutting in while held. EmuMD stands in for the template's hardware and, with `[bluetooth]`, for Bluepad32: controllers come from a script (`-O pads=FILE`, format in `emu/test/pads.txt`), and every rumble and LED call is logged as `Bluepad32: pad N ...`. Things that are easy to break:
