@@ -75,6 +75,15 @@ CMD_START			equ 4		; Hand control to the user firmware (USERFW)
 
 _conterm			equ $484	; Conterm device number
 
+; A TT's internal speaker is switched off while the terminal is shown, and
+; put back as TOS had it on the way to GEM or a reset, as the Booster's own
+; screen does. Setting bit 6 of the YM's I/O port A switches it off; TOS
+; leaves the bit clear, with the speaker on. Only on a TT: other machines
+; use that bit for something else.
+MCH_TT				equ 2		; _MCH cookie high word on a TT
+YM_PORT_A			equ 14		; YM register: I/O port A
+YM_TT_SPEAKER_OFF	equ $40		; Port A bit 6: set, the TT's internal speaker is off
+
 
 ; Constants needed for the commands
 RANDOM_TOKEN_ADDR:        equ (CMD_MAGIC_SENTINEL_ADDR + 4)  ; $FA2004
@@ -254,6 +263,37 @@ start_rom_code:
 	cmp.l #CMD_BOOT_GEM, d6
 	beq boot_gem
 
+; On a TT, switch the internal speaker off, unless TOS already had it off.
+; speaker_was_on remembers that there is something for speaker_restore to
+; put back. After the check above, so a warm reset that goes straight to
+; GEM leaves the speaker alone. XBIOS leaves a6 alone.
+	move.l _p_cookies.w, d0
+	beq.s .speaker_done			; No cookie jar: not a TT
+	move.l d0, a0
+.mch_next:
+	move.l (a0)+, d0			; Cookie name, 0 at the end of the jar
+	beq.s .speaker_done
+	move.l (a0)+, d1			; Cookie value
+	cmp.l #'_MCH', d0
+	bne.s .mch_next
+	swap d1
+	subq.w #MCH_TT, d1
+	bne.s .speaker_done
+	move.w #YM_PORT_A, -(sp)	; Register number, bit 7 clear: read
+	clr.w -(sp)					; Data, unused for a read
+	move.w #28, -(sp)			; XBIOS Giaccess
+	trap #14
+	addq.l #6, sp
+	btst #6, d0
+	bne.s .speaker_done			; TOS had it off: nothing to do or undo
+	lea speaker_was_on(pc), a0
+	st (a0)
+	move.w #YM_TT_SPEAKER_OFF, -(sp)
+	move.w #30, -(sp)			; XBIOS Ongibit: OR port A, interrupts masked
+	trap #14
+	addq.l #4, sp
+.speaker_done:
+
 ; Get the resolution of the screen. The terminal is 640x200: a mono
 ; monitor shows it in high resolution with every line doubled, and a colour
 ; one in medium resolution, which the terminal switches to here.
@@ -347,6 +387,7 @@ start_rom_code:
 	bra .print_loop_high		; Continue printing the message
 	
 .reset:
+	bsr speaker_restore			; The TT speaker back before the reset too
     move.l #PRE_RESET_WAIT, d6
 .wait_me:
     subq.l #1, d6           ; Decrement the outer loop
@@ -375,6 +416,9 @@ boot_gem:
 	; boot where CMD_START already installed. bsr/rts is stack-balanced, so the
 	; final rts below still unwinds the print loop back to TOS.
 	bsr	rom_function
+	; The TT speaker back as TOS had it (a no-op unless the terminal
+	; switched it off).
+	bsr	speaker_restore
 	; Put back the resolution and colour 3 the terminal changed for medium
 	; resolution, so the desktop comes up as TOS meant it to and the banner
 	; below prints in it. saved_rez is -1 when nothing was changed: a mono
@@ -520,11 +564,26 @@ rom_function:
 userfw_installed:
     dc.l    0
 
+; Switch a TT's speaker back on, if the terminal switched it off.
+speaker_restore:
+    lea     speaker_was_on(pc), a0
+    tst.b   (a0)
+    beq.s   .sr_done
+    move.w  #~YM_TT_SPEAKER_OFF&$FF, -(sp)
+    move.w  #29, -(sp)          ; XBIOS Offgibit: AND port A, interrupts masked
+    trap    #14
+    addq.l  #4, sp
+.sr_done:
+    rts
+
 ; What the terminal changed for medium resolution, for boot_gem to put back.
 ; In the relocated RAM copy, so writable, and fresh on every boot.
 saved_rez:
     dc.w    -1                  ; -1: resolution not changed
 saved_color3:
+    dc.w    0
+; $FF when the terminal switched a TT's speaker off, for speaker_restore.
+speaker_was_on:
     dc.w    0
 
 ; Shared functions included at the end of the file

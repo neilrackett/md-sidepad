@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.1 (unreleased)
+
+### On a TT
+
+A TT's internal speaker is now switched off while MD/Sidepad's screen is
+shown, as the Booster does on its own, and is back as TOS had it by the
+time the desktop appears.
+
 ## v1.5.0 (unreleased)
 
 ### Up to four controllers

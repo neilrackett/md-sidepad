@@ -186,7 +186,8 @@ The pieces below are hard-won and non-obvious — read before touching the comma
 - A medium-res cell is twice as tall as it is wide, so the visualiser is drawn twice as many cells wide as tall to stay square: an 18×9 box with a 6×3 blob. Anything new in that area should follow suit.
 - The full copy is 8000 words through a `rol.w #8` byte swap. That is about 64 ms on an 8 MHz ST, so the terminal redraws at about 15 Hz, which is faster than the RP's 100 ms UI refresh.
 - `renderControllerScreen`'s buffers (`currentLines`, `updates`, 4 KB) are **static**: at 80 columns they are about 6 KB, too much for core 0's 4 KB stack. That is safe because a refresh never runs inside another.
-- `main.s` uses about 1894 of its 2048 bytes.
+- **TT speaker:** on a TT (`_MCH` high word 2) `main.s` switches the internal speaker off while the terminal is shown, and `speaker_restore` puts it back in `boot_gem` and before `.reset`, as the Booster's own screen does (`rp2-booster-bootloader`, `term/atarist/src/main.s`). Setting bit 6 of the YM's port A is off; TOS leaves it clear. It goes through XBIOS `Giaccess`/`Ongibit`/`Offgibit`, only ever touches that bit, and does nothing if TOS already had it off or on a warm reset that skips the terminal (`speaker_was_on` stays clear). Hatari does not emulate the speaker; `--trace psg_write` shows the bit.
+- `main.s` uses about 1996 of its 2048 bytes. `inc/sidecart_functions.s` still carries `detect_hw`, `get_tos_version` and `send_sync_write_command_to_sidecart`, which nothing here calls: several hundred bytes to take back if it runs out.
 - `make emu` shows colour; add `-- --monitor mono` to `mdfw run` for mono.
 
 ### Multiple pads (`controller.c`, `xpadstate.c`)
