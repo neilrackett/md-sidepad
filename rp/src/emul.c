@@ -1041,6 +1041,27 @@ static void sidepadInputCb(TransmissionProtocol *protocol,
   if (protocol == NULL) {
     return;
   }
+  // A key the ST sent again is still one keypress. send_sync resends a
+  // command that has not been answered when its timeout runs out, and that
+  // timeout is a loop count: about a third of a second on an 8 MHz ST, but
+  // little more than this loop's 50 ms sleep on a TT's 68030. The answer is
+  // only written once the callbacks return, and M, J, X and H redraw the
+  // whole screen first, so a TT's resend arrived during the redraw, was read
+  // as a new command on the next pass, and toggled the setting straight back.
+  // A resend carries the token of the original, because the token is the
+  // seed the answer changes; a new keypress never does. Only the terminal's
+  // own commands have one: the resident hook's Xpad commands send zero.
+  if ((protocol->command_id == APP_TERMINAL_START) ||
+      (protocol->command_id == APP_TERMINAL_KEYSTROKE)) {
+    static uint32_t lastKeyToken = 0;
+    uint32_t keyToken = TPROTO_GET_RANDOM_TOKEN(protocol->payload);
+    if (keyToken == lastKeyToken) {
+      DPRINTF("Key resent by the ST (token 0x%08lX); ignored\n",
+              (unsigned long)keyToken);
+      return;
+    }
+    lastKeyToken = keyToken;
+  }
   // Any key cancels a running auto-exit countdown, and keeps it cancelled for
   // the rest of the session. Only mark cancelled when one was actually running,
   // so keys pressed before the first connect (e.g. [R] to reset) don't suppress

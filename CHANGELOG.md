@@ -8,6 +8,11 @@ A TT's internal speaker is now switched off while MD/Sidepad's screen is
 shown, as the Booster does on its own, and is back as TOS had it by the
 time the desktop appears.
 
+Pressing `M`, `J`, `X` or `H` on a TT switched the setting and then
+straight back again. A TT is fast enough to send a key a second time
+before the Multi-device has answered the first, and the second was
+taken for a new keypress. It is now taken for the same one.
+
 ## v1.5.0 (unreleased)
 
 ### Up to four controllers
